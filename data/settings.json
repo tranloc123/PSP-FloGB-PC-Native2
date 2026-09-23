@@ -1,0 +1,10 @@
+{
+  "liveUsername": "",
+  "ppssppPath": "",
+  "isoPath": "",
+  "ppssppDebugger": "ws://127.0.0.1:9000/debugger",
+  "autoLaunchPPSSPP": false,
+  "showOverlay": true,
+  "overlayTop10": true,
+  "enginePreferBundled": true
+}

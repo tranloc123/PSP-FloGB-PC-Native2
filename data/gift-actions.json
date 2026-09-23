@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "mode": "game-actions-only",
+  "defaultGift": {
+    "enabled": false
+  },
+  "rules": {}
+}
