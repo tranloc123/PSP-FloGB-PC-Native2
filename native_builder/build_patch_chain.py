@@ -143,6 +143,50 @@ apply('apply_psp_live_flogb_v0_5_8c.py')
 # Windows compatibility adapter for V0.5.9A native live bridge.
 run(PYTHON, TOOLS / 'patch_windows_native_bridge.py', REPO)
 
+# ---------------------------------------------------------------------------
+# Windows / pinned PPSSPP UI API compatibility
+#
+# The Android patch lineage contains two API forms that do not compile against
+# the pinned Windows x64 PPSSPP source:
+#   1) DrawBuffer::DrawTextW(...) -> DrawBuffer::DrawText(...)
+#   2) LinearLayout::padding is UI::Margins, not UI::Padding.
+#
+# Keep this post-pass AFTER all APK-derived patches so later patchers cannot
+# re-introduce the incompatible forms.
+# ---------------------------------------------------------------------------
+debug = must('UI/DebugOverlay.cpp')
+d = debug.read_text(encoding='utf-8')
+
+drawtextw_count = d.count('DrawTextW(')
+if drawtextw_count:
+    d = d.replace('DrawTextW(', 'DrawText(')
+
+if 'DrawTextW(' in d:
+    raise SystemExit('Windows UI compatibility failed: DrawTextW survived')
+
+debug.write_text(d, encoding='utf-8')
+print(f'Windows UI compat: DrawTextW -> DrawText: {drawtextw_count} occurrence(s)')
+
+emu = must('UI/EmuScreen.cpp')
+e = emu.read_text(encoding='utf-8')
+
+padding_fixes = 0
+for old in (
+    'g_scbdInspectorPanel->padding = Padding(6);',
+    'g_scbdInspectorPanel->padding = UI::Padding(6);',
+):
+    count = e.count(old)
+    if count:
+        e = e.replace(old, 'g_scbdInspectorPanel->padding = UI::Margins(6);')
+        padding_fixes += count
+
+if 'g_scbdInspectorPanel->padding = Padding(6);' in e or \
+   'g_scbdInspectorPanel->padding = UI::Padding(6);' in e:
+    raise SystemExit('Windows UI compatibility failed: SCBD inspector Padding survived')
+
+emu.write_text(e, encoding='utf-8')
+print(f'Windows UI compat: inspector Padding -> Margins: {padding_fixes} occurrence(s)')
+
 # Structural preflight.
 d = must('UI/DebugOverlay.cpp').read_text(encoding='utf-8')
 required = [
@@ -155,6 +199,14 @@ required = [
 missing = [m for m in required if m not in d]
 if missing:
     raise SystemExit(f'Final source preflight missing: {missing}')
+
+if 'DrawTextW(' in d:
+    raise SystemExit('Final source preflight: Windows-incompatible DrawTextW still present')
+
+emu_check = must('UI/EmuScreen.cpp').read_text(encoding='utf-8')
+if 'g_scbdInspectorPanel->padding = Padding(6);' in emu_check or \
+   'g_scbdInspectorPanel->padding = UI::Padding(6);' in emu_check:
+    raise SystemExit('Final source preflight: Windows-incompatible inspector Padding still present')
 for rel in [
     'SCBD/SCBDNativeWinner.h',
     'SCBD/SCBDNativeLiveBridge.h',
