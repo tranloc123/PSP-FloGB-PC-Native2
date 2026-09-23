@@ -29,7 +29,6 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
-          cache: 'npm'
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@v3
@@ -63,9 +62,17 @@ jobs:
             'WINNER FINAL V0.5.8C',
             'SCBDNativeLiveBridge::Process();',
             'DrawSCBDFinalHeroPortraitV059C'
-          ) | ForEach-Object { if (-not $debug.Contains($_)) { throw "Missing source marker: $_" } }
-          if (-not $bridge.Contains('WSAStartup')) { throw 'Windows Winsock bridge patch missing' }
-          if (-not $winner.Contains('BeginWinnerPick')) { throw 'Winner/Pick core missing' }
+          ) | ForEach-Object {
+            if (-not $debug.Contains($_)) {
+              throw "Missing source marker: $_"
+            }
+          }
+          if (-not $bridge.Contains('WSAStartup')) {
+            throw 'Windows Winsock bridge patch missing'
+          }
+          if (-not $winner.Contains('BeginWinnerPick')) {
+            throw 'Winner/Pick core missing'
+          }
           Write-Host 'Native source preflight PASS'
 
       - name: Stamp native Windows engine version
@@ -92,7 +99,9 @@ jobs:
           if (Test-Path engine) { Remove-Item -Recurse -Force engine }
           New-Item -ItemType Directory -Force engine | Out-Null
           $exe = Get-ChildItem -Path ppsspp -Filter PPSSPPWindows64.exe -File -Recurse | Select-Object -First 1
-          if (-not $exe) { throw 'PPSSPPWindows64.exe was not produced' }
+          if (-not $exe) {
+            throw 'PPSSPPWindows64.exe was not produced'
+          }
           Copy-Item $exe.FullName engine/PPSSPPWindows64.exe
           Copy-Item -Recurse ppsspp/assets engine/assets
           @"
@@ -101,7 +110,9 @@ jobs:
           UDP native bridge: 127.0.0.1:8796
           Debugger: ws://127.0.0.1:9000/debugger
           "@ | Set-Content -Encoding utf8 engine/ENGINE_BUILD_INFO.txt
-          if (-not (Test-Path engine/PPSSPPWindows64.exe)) { throw 'Engine copy failed' }
+          if (-not (Test-Path engine/PPSSPPWindows64.exe)) {
+            throw 'Engine copy failed'
+          }
 
       - name: Install Electron dependencies
         shell: pwsh
@@ -123,8 +134,12 @@ jobs:
         run: |
           $unpacked = Get-ChildItem -Path dist -Directory -Filter '*unpacked*' | Select-Object -First 1
           if ($unpacked) {
-            $native = Get-ChildItem $unpacked.FullName -Filter PPSSPPWindows64.exe -Recurse | Where-Object { $_.FullName -match 'engine' } | Select-Object -First 1
-            if (-not $native) { throw 'Packaged app is missing bundled Native Engine' }
+            $native = Get-ChildItem $unpacked.FullName -Filter PPSSPPWindows64.exe -Recurse |
+              Where-Object { $_.FullName -match 'engine' } |
+              Select-Object -First 1
+            if (-not $native) {
+              throw 'Packaged app is missing bundled Native Engine'
+            }
             Write-Host "Bundled engine verified: $($native.FullName)"
           }
           Get-ChildItem dist -File | Format-Table Name,Length
