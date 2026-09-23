@@ -164,8 +164,30 @@ if drawtextw_count:
 if 'DrawTextW(' in d:
     raise SystemExit('Windows UI compatibility failed: DrawTextW survived')
 
+# On Windows, <windows.h> defines DrawText as a macro that expands to
+# DrawTextW/DrawTextA.  That macro also rewrites C++ member calls such as
+# ctx->Draw()->DrawText(...), which is why MSVC reports that DrawBuffer has
+# no member named DrawTextW even though the source text says DrawText.
+#
+# Insert the undef AFTER every include, immediately before the first static
+# function/SCBD helper in this translation unit.
+macro_guard = '''#ifdef DrawText
+#undef DrawText
+#endif
+
+'''
+if '#undef DrawText' not in d:
+    first_static = d.find('static ')
+    if first_static < 0:
+        raise SystemExit('Windows UI compatibility failed: cannot find post-include insertion point')
+    d = d[:first_static] + macro_guard + d[first_static:]
+
+if '#undef DrawText' not in d:
+    raise SystemExit('Windows UI compatibility failed: DrawText macro guard was not inserted')
+
 debug.write_text(d, encoding='utf-8')
-print(f'Windows UI compat: DrawTextW -> DrawText: {drawtextw_count} occurrence(s)')
+print(f'Windows UI compat: DrawTextW -> DrawText source replacements: {drawtextw_count} occurrence(s)')
+print('Windows UI compat: #undef DrawText inserted after includes')
 
 emu = must('UI/EmuScreen.cpp')
 e = emu.read_text(encoding='utf-8')
@@ -202,6 +224,8 @@ if missing:
 
 if 'DrawTextW(' in d:
     raise SystemExit('Final source preflight: Windows-incompatible DrawTextW still present')
+if '#undef DrawText' not in d:
+    raise SystemExit('Final source preflight: Windows DrawText macro guard missing')
 
 emu_check = must('UI/EmuScreen.cpp').read_text(encoding='utf-8')
 if 'g_scbdInspectorPanel->padding = Padding(6);' in emu_check or \
