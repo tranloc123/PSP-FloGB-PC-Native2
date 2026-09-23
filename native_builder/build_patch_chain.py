@@ -1,249 +1,161 @@
-from __future__ import annotations
-from pathlib import Path
-import subprocess, sys, shutil
+name: Build PSP FloGB Native Unified V1.2.0 Windows
 
-if len(sys.argv) != 2:
-    raise SystemExit('Usage: build_patch_chain.py <ppsspp_repo>')
+on:
+  workflow_dispatch:
 
-ROOT = Path(__file__).resolve().parent
-TOOLS = ROOT / 'tools'
-BRANDING = ROOT / 'branding'
-REPO = Path(sys.argv[1]).resolve()
-PYTHON = sys.executable
+permissions:
+  contents: read
 
+env:
+  PPSSPP_COMMIT: 03bb3e20fed8cbea4901c774a3245bc3fc2c0de0
+  BUILD_CONFIGURATION: Release
 
-def run(*args, cwd=None):
-    cmd = [str(x) for x in args]
-    print('>>>', ' '.join(cmd), flush=True)
-    subprocess.run(cmd, cwd=str(cwd) if cwd else None, check=True)
+jobs:
+  build:
+    name: Native engine + Unified EXE x64
+    runs-on: windows-latest
+    timeout-minutes: 150
 
+    steps:
+      - name: Checkout PSP FloGB source
+        uses: actions/checkout@v7
 
-def apply(name, *extra):
-    run(PYTHON, TOOLS / name, REPO, *extra)
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
 
-def must(rel):
-    p = REPO / rel
-    if not p.exists():
-        raise SystemExit(f'Missing after patch: {rel}')
-    return p
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v3
 
-print('=== PSP FloGB native Windows patch chain ===')
+      - name: Install native patch dependencies
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check pillow numpy
 
-# V0.3 -> V0.4.6 baseline used by the proven Android branch.
-run(PYTHON, TOOLS / 'apply_psp_live_flogb_v0_3.py', REPO, BRANDING / 'PSP_Live_FloGB_icon_source.png')
-for name in [
-    'apply_psp_live_flogb_v0_4.py',
-    'apply_psp_live_flogb_v0_4_1.py',
-    'apply_psp_live_flogb_v0_4_2.py',
-    'apply_psp_live_flogb_v0_4_3.py',
-    'apply_psp_live_flogb_v0_4_4.py',
-    'apply_psp_live_flogb_v0_4_5.py',
-    'apply_psp_live_flogb_v0_4_6.py',
-]:
-    apply(name)
+      - name: Clone pinned PPSSPP source
+        shell: pwsh
+        run: |
+          if (Test-Path ppsspp) { Remove-Item -Recurse -Force ppsspp }
+          git clone https://github.com/hrydgard/ppsspp.git ppsspp
+          Set-Location ppsspp
+          git checkout "$env:PPSSPP_COMMIT"
+          git submodule update --init --recursive
 
-# Repair the old 0.5.0 patcher boundary exactly like the proven APK workflow.
-run(PYTHON, TOOLS / 'fix_v0_5_0_controls_boundary.py', cwd=ROOT)
-apply('apply_psp_live_flogb_v0_5_0.py')
+      - name: Replay proven PSP FloGB APK patch chain
+        shell: pwsh
+        run: python native_builder/build_patch_chain.py ppsspp
 
-# Cumulative PPSSPP API compatibility fixes from the later proven APK workflows.
-header = must('SCBD/SCBDNativeHUDScreens.h')
-s = header.read_text(encoding='utf-8')
-line_replacements = {
-    '        avatar->SetScale(0.72f);': '        avatar->SetSmall(true);',
-    '            portrait->SetScale(0.62f);': '            portrait->SetSmall(true);',
-    '        row->SetScale(static_cast<float>(cfg.rankFontPct) / 100.0f);': '        row->SetSmall(cfg.rankFontPct < 100);',
-    '            row->SetScale(static_cast<float>(cfg.rankFontPct) / 100.0f);': '            row->SetSmall(cfg.rankFontPct < 100);',
-}
-lines = s.splitlines(keepends=True)
-seen = {k: 0 for k in line_replacements}
-out = []
-for line in lines:
-    bare = line.rstrip('\r\n')
-    nl = line[len(bare):]
-    if bare in line_replacements:
-        seen[bare] += 1
-        out.append(line_replacements[bare] + nl)
-    else:
-        out.append(line)
-bad = {k:v for k,v in seen.items() if v != 1}
-if bad:
-    raise SystemExit(f'V0.5.0 UI compatibility marker mismatch: {bad}')
-s = ''.join(out)
-if s.count('UI::DialogResult') != 1 or s.count('UI::DR_OK') != 1:
-    raise SystemExit('V0.5.0 DialogResult marker mismatch')
-s = s.replace('UI::DialogResult', 'DialogResult').replace('UI::DR_OK', 'DR_OK')
-if s.count('UI::ORIENT_HORIZONTAL') != 2:
-    raise SystemExit('V0.5.0 orientation marker mismatch')
-s = s.replace('UI::ORIENT_HORIZONTAL', 'ORIENT_HORIZONTAL')
-header.write_text(s, encoding='utf-8')
+      - name: Native source preflight
+        shell: pwsh
+        run: |
+          $debug = Get-Content ppsspp/UI/DebugOverlay.cpp -Raw
+          $bridge = Get-Content ppsspp/SCBD/SCBDNativeLiveBridge.h -Raw
+          $winner = Get-Content ppsspp/SCBD/SCBDNativeWinner.h -Raw
+          @(
+            'SCBDVirtualInput::Process();',
+            'DrawSCBDMatchTop5HUD',
+            'WINNER FINAL V0.5.8C',
+            'SCBDNativeLiveBridge::Process();',
+            'DrawSCBDFinalHeroPortraitV059C'
+          ) | ForEach-Object {
+            if (-not $debug.Contains($_)) {
+              throw "Missing source marker: $_"
+            }
+          }
+          if (-not $bridge.Contains('WSAStartup')) {
+            throw 'Windows Winsock bridge patch missing'
+          }
+          if (-not $winner.Contains('BeginWinnerPick')) {
+            throw 'Winner/Pick core missing'
+          }
+          if ($debug.Contains('DrawTextW(')) {
+            throw 'Windows incompatible DrawTextW survived patch chain'
+          }
+          if (-not $debug.Contains('#undef DrawText')) {
+            throw 'Windows DrawText macro guard missing'
+          }
+          Write-Host 'Native source preflight PASS'
 
-debug = must('UI/DebugOverlay.cpp')
-d = debug.read_text(encoding='utf-8')
-old = '    const Config &cfg = Cfg();'
-new = '    const auto &cfg = SCBDNativeHUD::Cfg();'
-if d.count(old) == 1:
-    d = d.replace(old, new, 1)
-elif new not in d:
-    raise SystemExit('V0.5.0 ambiguous Config hotfix marker missing')
-debug.write_text(d, encoding='utf-8')
+      - name: Stamp native Windows engine version
+        shell: pwsh
+        run: |
+          @'
+          const char *PPSSPP_GIT_VERSION = "PSP-FloGB-Native-Unified-1.2.0";
+          #define PPSSPP_GIT_VERSION_NO_UPDATE 1
+          '@ | Set-Content -Encoding ascii ppsspp/git-version.cpp
 
-apply('apply_psp_live_flogb_v0_5_0_hotfix5.py')
-apply('apply_psp_live_flogb_v0_5_1.py')
-apply('apply_psp_live_flogb_v0_5_2.py')
+          @'
+          #define PPSSPP_WIN_VERSION_STRING "1.20.4-FloGB-1.2.0"
+          #define PPSSPP_WIN_VERSION_COMMA 1,20,4,120
+          #define PPSSPP_WIN_VERSION_NO_UPDATE 1
+          '@ | Set-Content -Encoding ascii ppsspp/Windows/win-version.h
 
-# V0.5.3 character portrait atlas.
-char_atlas = REPO / 'assets/scbd/characters/character_portraits_atlas.png'
-char_atlas.parent.mkdir(parents=True, exist_ok=True)
-run(PYTHON, TOOLS / 'build_scbd_character_atlas_v053.py', BRANDING / 'SCBD_character_sheet_v053.png', char_atlas)
-apply('apply_psp_live_flogb_v0_5_3.py')
+      - name: Build PSP FloGB native emulator x64
+        shell: pwsh
+        run: msbuild ppsspp/Windows/PPSSPP.sln /m /p:TrackFileAccess=false /p:Configuration=$env:BUILD_CONFIGURATION /p:Platform=x64
 
-# V0.5.4a. The original v054 patcher produces the exact 1540x220 seven-tier atlas;
-# the later workflow only renamed this lane to 054a after an asset/workflow correction.
-rank_atlas = REPO / 'assets/scbd/rank_frames/rank_frames_atlas.png'
-rank_atlas.parent.mkdir(parents=True, exist_ok=True)
-run(PYTHON, TOOLS / 'build_scbd_rank_frame_atlas_v054a.py', BRANDING / 'SCBD_rank_frames_v054a.jpg', rank_atlas)
-apply('apply_psp_live_flogb_v0_5_4a.py')
+      - name: Install native engine into Unified app
+        shell: pwsh
+        run: |
+          if (Test-Path engine) { Remove-Item -Recurse -Force engine }
+          New-Item -ItemType Directory -Force engine | Out-Null
+          $exe = Get-ChildItem -Path ppsspp -Filter PPSSPPWindows64.exe -File -Recurse | Select-Object -First 1
+          if (-not $exe) {
+            throw 'PPSSPPWindows64.exe was not produced'
+          }
+          Copy-Item $exe.FullName engine/PPSSPPWindows64.exe
+          Copy-Item -Recurse ppsspp/assets engine/assets
+          @"
+          PSP FloGB Native Engine bundled with Unified 1.2.0
+          Base commit: $env:PPSSPP_COMMIT
+          UDP native bridge: 127.0.0.1:8796
+          Debugger: ws://127.0.0.1:9000/debugger
+          "@ | Set-Content -Encoding utf8 engine/ENGINE_BUILD_INFO.txt
+          if (-not (Test-Path engine/PPSSPPWindows64.exe)) {
+            throw 'Engine copy failed'
+          }
 
-# V0.5.5 rendered rank numbers.
-rank_nums = REPO / 'assets/scbd/rank_numbers/rank_numbers_atlas.png'
-rank_nums.parent.mkdir(parents=True, exist_ok=True)
-shutil.copy2(BRANDING / 'SCBD_rank_numbers_v055.png', rank_nums)
-apply('apply_psp_live_flogb_v0_5_5.py')
+      - name: Install Electron dependencies
+        shell: pwsh
+        run: |
+          npm config set ignore-scripts false
+          npm install --foreground-scripts
+          if (-not (Test-Path node_modules/electron/dist/electron.exe)) {
+            Write-Host 'Electron binary missing after npm install, running postinstall directly...'
+            node node_modules/electron/install.js
+          }
+          npx electron --version
 
-# V0.5.6 clean RGBA frame atlas supersedes the temporary 0.5.4a asset.
-shutil.copy2(BRANDING / 'SCBD_rank_frames_v056.png', rank_atlas)
-apply('apply_psp_live_flogb_v0_5_6.py')
+      - name: Build one PSP FloGB Windows app - no publish
+        shell: pwsh
+        run: npm run dist -- --publish never
 
-for name in [
-    'apply_psp_live_flogb_v0_5_7.py',
-    'apply_psp_live_flogb_v0_5_7a.py',
-    'apply_psp_live_flogb_v0_5_7b.py',
-    'apply_psp_live_flogb_v0_5_7c.py',
-    'apply_psp_live_flogb_v0_5_7c3.py',
-    'apply_psp_live_flogb_v0_5_7c4r1.py',
-]:
-    apply(name)
+      - name: Verify packaged Native Engine exists
+        shell: pwsh
+        run: |
+          $unpacked = Get-ChildItem -Path dist -Directory -Filter '*unpacked*' | Select-Object -First 1
+          if (-not $unpacked) {
+            throw 'win-unpacked output is missing'
+          }
+          $native = Get-ChildItem $unpacked.FullName -Filter PPSSPPWindows64.exe -Recurse |
+            Where-Object { $_.FullName -match 'engine' } |
+            Select-Object -First 1
+          if (-not $native) {
+            throw 'Packaged app is missing bundled Native Engine'
+          }
+          Write-Host "Bundled engine verified: $($native.FullName)"
+          Get-ChildItem dist -File | Format-Table Name,Length
 
-# Install split ranking/pick/font assets before the final cumulative 0.5.9E/HOTFIX8 patcher.
-assets = {
-    BRANDING / 'SCBD_character_portraits_ranking_v058c.png': REPO / 'assets/scbd/characters/character_portraits_atlas.png',
-    BRANDING / 'SCBD_pick_portraits_exact_v058c.png': REPO / 'assets/scbd/winner_asset_v058c/pick_portraits_exact.png',
-    BRANDING / 'SCBD_royal_unicode_atlas_v058c.png': REPO / 'assets/scbd/winner_asset_v058c/royal_unicode_atlas.png',
-    BRANDING / 'SCBD_timer_digits_v058c.png': REPO / 'assets/scbd/winner_asset_v058c/timer_digits.png',
-}
-for src, dst in assets.items():
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-
-# This file is the final cumulative patch from the user-confirmed Android HOTFIX8 package.
-apply('apply_psp_live_flogb_v0_5_8c.py')
-
-# Windows compatibility adapter for V0.5.9A native live bridge.
-run(PYTHON, TOOLS / 'patch_windows_native_bridge.py', REPO)
-
-# ---------------------------------------------------------------------------
-# Windows / pinned PPSSPP UI API compatibility
-#
-# The Android patch lineage contains two API forms that do not compile against
-# the pinned Windows x64 PPSSPP source:
-#   1) DrawBuffer::DrawTextW(...) -> DrawBuffer::DrawText(...)
-#   2) LinearLayout::padding is UI::Margins, not UI::Padding.
-#
-# Keep this post-pass AFTER all APK-derived patches so later patchers cannot
-# re-introduce the incompatible forms.
-# ---------------------------------------------------------------------------
-debug = must('UI/DebugOverlay.cpp')
-d = debug.read_text(encoding='utf-8')
-
-drawtextw_count = d.count('DrawTextW(')
-if drawtextw_count:
-    d = d.replace('DrawTextW(', 'DrawText(')
-
-if 'DrawTextW(' in d:
-    raise SystemExit('Windows UI compatibility failed: DrawTextW survived')
-
-# On Windows, <windows.h> defines DrawText as a macro that expands to
-# DrawTextW/DrawTextA.  That macro also rewrites C++ member calls such as
-# ctx->Draw()->DrawText(...), which is why MSVC reports that DrawBuffer has
-# no member named DrawTextW even though the source text says DrawText.
-#
-# Insert the undef AFTER every include, immediately before the first static
-# function/SCBD helper in this translation unit.
-macro_guard = '''#ifdef DrawText
-#undef DrawText
-#endif
-
-'''
-if '#undef DrawText' not in d:
-    first_static = d.find('static ')
-    if first_static < 0:
-        raise SystemExit('Windows UI compatibility failed: cannot find post-include insertion point')
-    d = d[:first_static] + macro_guard + d[first_static:]
-
-if '#undef DrawText' not in d:
-    raise SystemExit('Windows UI compatibility failed: DrawText macro guard was not inserted')
-
-debug.write_text(d, encoding='utf-8')
-print(f'Windows UI compat: DrawTextW -> DrawText source replacements: {drawtextw_count} occurrence(s)')
-print('Windows UI compat: #undef DrawText inserted after includes')
-
-emu = must('UI/EmuScreen.cpp')
-e = emu.read_text(encoding='utf-8')
-
-padding_fixes = 0
-for old in (
-    'g_scbdInspectorPanel->padding = Padding(6);',
-    'g_scbdInspectorPanel->padding = UI::Padding(6);',
-):
-    count = e.count(old)
-    if count:
-        e = e.replace(old, 'g_scbdInspectorPanel->padding = UI::Margins(6);')
-        padding_fixes += count
-
-if 'g_scbdInspectorPanel->padding = Padding(6);' in e or \
-   'g_scbdInspectorPanel->padding = UI::Padding(6);' in e:
-    raise SystemExit('Windows UI compatibility failed: SCBD inspector Padding survived')
-
-emu.write_text(e, encoding='utf-8')
-print(f'Windows UI compat: inspector Padding -> Margins: {padding_fixes} occurrence(s)')
-
-# Structural preflight.
-d = must('UI/DebugOverlay.cpp').read_text(encoding='utf-8')
-required = [
-    'SCBDVirtualInput::Process();',
-    'DrawSCBDMatchTop5HUD',
-    'WINNER FINAL V0.5.8C',
-    'SCBDNativeLiveBridge::Process();',
-    'DrawSCBDFinalHeroPortraitV059C',
-]
-missing = [m for m in required if m not in d]
-if missing:
-    raise SystemExit(f'Final source preflight missing: {missing}')
-
-if 'DrawTextW(' in d:
-    raise SystemExit('Final source preflight: Windows-incompatible DrawTextW still present')
-if '#undef DrawText' not in d:
-    raise SystemExit('Final source preflight: Windows DrawText macro guard missing')
-
-emu_check = must('UI/EmuScreen.cpp').read_text(encoding='utf-8')
-if 'g_scbdInspectorPanel->padding = Padding(6);' in emu_check or \
-   'g_scbdInspectorPanel->padding = UI::Padding(6);' in emu_check:
-    raise SystemExit('Final source preflight: Windows-incompatible inspector Padding still present')
-for rel in [
-    'SCBD/SCBDNativeWinner.h',
-    'SCBD/SCBDNativeLiveBridge.h',
-    'SCBD/SCBDNativeHUDScreens.h',
-    'assets/scbd/characters/character_portraits_atlas.png',
-    'assets/scbd/winner_asset_v058c/pick_portraits_exact.png',
-]:
-    must(rel)
-
-info = must('PSP_LIVE_FLOGB_BUILD_INFO.txt')
-with info.open('a', encoding='utf-8') as f:
-    f.write('\nPSP FloGB Native Windows Engine V0.1\n')
-    f.write('Port target: Windows x64 / MSVC / bundled in PSP FloGB Unified\n')
-    f.write('Native bridge: cross-platform UDP 127.0.0.1:8796 with Winsock on Windows\n')
-
-print('=== PATCH CHAIN PASS ===')
+      - name: Upload PSP FloGB Native Unified V1.2.0
+        uses: actions/upload-artifact@v7
+        with:
+          name: PSP-FloGB-Native-Unified-V1.2.0-Windows-x64
+          path: |
+            dist/*.exe
+            dist/*unpacked*/**
+          if-no-files-found: error
