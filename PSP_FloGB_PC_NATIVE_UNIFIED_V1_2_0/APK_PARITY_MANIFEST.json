@@ -1,0 +1,33 @@
+{
+  "baseline": "PSP Live FloGB Android V0.5.9E HOTFIX8",
+  "pc_target": "PSP FloGB PC Unified V1.1.0",
+  "combat_core": {
+    "anti_heal": true,
+    "real_ko": true,
+    "state3_victory": true,
+    "outro": true,
+    "clean_return_training": true,
+    "winner_pick_15s": true,
+    "pick_1_28": true,
+    "p2_random30": true,
+    "full_character_select": true
+  },
+  "ranking": {
+    "match_top10_p1_p2": true,
+    "top100_week": true,
+    "top100_month": true,
+    "winner_top1_dependency": true
+  },
+  "gift_rules": {
+    "bulk_catalog_download": false,
+    "learn_from_live": true,
+    "must_add_rule_before_game_action": true,
+    "configurable_points_in_rule": false,
+    "actions": ["input", "heal_team", "damage_enemy", "winner_p1", "winner_p2", "video", "effect"]
+  },
+  "engine": {
+    "bundled_path": "engine/PPSSPPWindows64.exe",
+    "v1_1_0_status": "adapter_ready_binary_not_bundled",
+    "fallback": "external PPSSPPWindows64.exe compatibility mode"
+  }
+}

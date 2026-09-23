@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>SCBD TikTok LIVE V0.6.0</title>
+<style>
+:root{color-scheme:dark;--bg:#06110e;--panel:#0b1d17;--line:#315d49;--gold:#e4b85b;--green:#52d38d;--bad:#ff6b6b;--muted:#98aa9f}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#ecf7f0;font:14px system-ui,-apple-system,Segoe UI,sans-serif}.wrap{max-width:1180px;margin:auto;padding:14px}.title{font-weight:900;color:var(--gold);font-size:20px;margin:3px 0}.sub{color:var(--muted);font-size:12px;margin-bottom:12px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}.card h3{margin:0 0 9px;color:var(--gold);font-size:14px}.row{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:7px 0}.row3{display:grid;grid-template-columns:2fr 1fr 1fr;gap:7px;margin:7px 0}input,textarea,button,select{width:100%;border:1px solid var(--line);background:#10271e;color:#fff;border-radius:8px;padding:10px;font:inherit}button{cursor:pointer;font-weight:800}.gold{background:#735016;color:#fff4ce;border-color:#a77b2e}.green{background:#164c35}.red{background:#5e2626}.tiny{font-size:11px;color:var(--muted)}.status{display:grid;grid-template-columns:120px 1fr;gap:5px;font:12px ui-monospace,monospace}.ok{color:var(--green)}.bad{color:var(--bad)}.warn{color:#ffd36c}.boards{display:grid;grid-template-columns:1fr 1fr;gap:8px}.board{border:1px solid #244d3b;border-radius:9px;overflow:hidden}.bh{padding:8px;background:#123226;font-weight:900}.entry{display:grid;grid-template-columns:28px 1fr auto;gap:5px;padding:6px 8px;border-top:1px solid #19382d;font-size:12px}.pick{font:12px ui-monospace,monospace;background:#071711;padding:8px;border-radius:8px;white-space:pre-wrap}.logs{height:240px;overflow:auto;background:#030a08;border-radius:8px;padding:8px;font:11px ui-monospace,monospace}.log{margin:0 0 4px}.log.warn{color:#ffd36c}.log.error{color:#ff8080}.full{grid-column:1/-1}@media(max-width:780px){.grid,.boards{grid-template-columns:1fr}.row,.row3{grid-template-columns:1fr}.status{grid-template-columns:105px 1fr}}
+</style>
+</head>
+<body><div class="wrap">
+<div class="title">SCBD TikTok LIVE V0.6.0 • REAL INTEGRATION</div>
+<div class="sub">TikTools LIVE → Team/Gift/Top1 → Winner/Pick native → PPSSPP auto KO/outro/Character Select</div>
+
+<div class="grid">
+<section class="card">
+<h3>1. KẾT NỐI TIKTOK LIVE THẬT</h3>
+<input id="liveInput" placeholder="@username hoặc link TikTok LIVE / link rút gọn">
+<div class="row"><input id="apiKey" type="password" placeholder="TikTools API Key"><button class="gold" onclick="connectLive()">KẾT NỐI LIVE</button></div>
+<button class="red" onclick="disconnectLive()">NGẮT LIVE</button>
+<div class="tiny" style="margin-top:7px">API Key chỉ được gửi tới server local 127.0.0.1 khi bạn bấm kết nối. Server không trả key qua /api/state.</div>
+</section>
+
+<section class="card">
+<h3>2. TRẠNG THÁI HỆ THỐNG</h3>
+<div id="status" class="status"></div>
+</section>
+
+<section class="card full">
+<h3>3. TOP TEAM REALTIME</h3>
+<div class="boards"><div class="board"><div class="bh">TEAM P1</div><div id="p1"></div></div><div class="board"><div class="bh">TEAM P2</div><div id="p2"></div></div></div>
+<div class="row"><button class="red" onclick="resetSession()">RESET SESSION / TEAM LOCK / ĐIỂM</button><button onclick="refresh()">REFRESH</button></div>
+</section>
+
+<section class="card">
+<h3>4. WINNER / PICK WINDOW</h3>
+<div id="pick" class="pick">Chưa có trận kết thúc.</div>
+<div class="tiny" style="margin-top:8px">Team thắng được xác định từ HP thật. Quyền /pick được chụp theo Top1 của team thắng tại thời điểm KO. Chỉ lệnh <b>/pick 1..28</b> hợp lệ. Timeout → source slot 30 Random để Soulcalibur tự chọn.</div>
+</section>
+
+<section class="card">
+<h3>5. ĐIỂM QUÀ</h3>
+<textarea id="giftRules" rows="7" placeholder="Rose=30&#10;GG=30"></textarea>
+<button class="green" onclick="saveRules()">LƯU GIFT RULES</button>
+<div class="tiny" style="margin-top:7px">Quà không có rule riêng sẽ dùng diamondCount × repeatCount. Gift streak chỉ tính event cuối repeatEnd=true.</div>
+</section>
+
+<section class="card full">
+<h3>6. DEV TEST LOCAL</h3>
+<div class="row3"><input id="testUser" value="TINA" placeholder="username"><select id="testTeam"><option>P1</option><option>P2</option></select><button onclick="testTeam()">LOCK TEAM</button></div>
+<div class="row3"><input id="testPoints" value="1000" type="number"><button onclick="testGift()">+ GIFT</button><button class="gold" onclick="testWinner()">TEST NATIVE WINNER</button></div>
+<div class="row3"><input id="testComment" value="/pick 14"><button onclick="testComment()">TEST /PICK</button><button class="red" onclick="manualKO()">MANUAL REAL KO FLOW</button></div>
+<div class="tiny">“TEST NATIVE WINNER” chỉ test UI/pick state. “MANUAL REAL KO FLOW” sẽ thật sự gửi GATE/STATE/menu input vào PPSSPP, chỉ bấm khi đang ở Training Combat.</div>
+</section>
+
+<section class="card full"><h3>EVENT LOG</h3><div id="logs" class="logs"></div></section>
+</div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+let firstRules=true;
+async function api(url,data){
+  const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data||{})});
+  const j=await r.json(); if(!r.ok||j.ok===false) throw new Error(j.error||'API error'); return j;
+}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function connectLive(){try{await api('/api/live/connect',{liveInput:$('liveInput').value,apiKey:$('apiKey').value});await refresh()}catch(e){alert(e.message)}}
+async function disconnectLive(){try{await api('/api/live/disconnect');await refresh()}catch(e){alert(e.message)}}
+async function resetSession(){if(!confirm('Xóa toàn bộ team lock + điểm của session hiện tại?'))return;try{await api('/api/session/reset');await refresh()}catch(e){alert(e.message)}}
+async function saveRules(){try{await api('/api/gift-rules',{rules:$('giftRules').value});await refresh()}catch(e){alert(e.message)}}
+async function testTeam(){try{await api('/api/test/team',{username:$('testUser').value,team:$('testTeam').value});await refresh()}catch(e){alert(e.message)}}
+async function testGift(){try{await api('/api/test/gift',{username:$('testUser').value,points:Number($('testPoints').value)});await refresh()}catch(e){alert(e.message)}}
+async function testWinner(){try{await api('/api/test/winner',{team:$('testTeam').value});await refresh()}catch(e){alert(e.message)}}
+async function testComment(){try{await api('/api/test/comment',{username:$('testUser').value,comment:$('testComment').value});await refresh()}catch(e){alert(e.message)}}
+async function manualKO(){if(!confirm('Thao tác này sẽ kích hoạt flow KO/outro/menu thật trong PPSSPP. Tiếp tục?'))return;try{await api('/api/manual/ko',{winnerTeam:$('testTeam').value});await refresh()}catch(e){alert(e.message)}}
+function row(label,value,cls=''){return `<div>${esc(label)}</div><div class="${cls}">${esc(value)}</div>`}
+function board(rows){if(!rows||!rows.length)return '<div class="entry"><span>-</span><span>Chưa có viewer</span><b>0</b></div>';return rows.map((x,i)=>`<div class="entry"><span>#${i+1}</span><span>${esc(x.username)}</span><b>${Number(x.score||0).toLocaleString('vi-VN')}</b></div>`).join('')}
+async function refresh(){
+ try{
+  const r=await fetch('/api/state',{cache:'no-store'}); const s=await r.json();
+  const n=s.native||{},p=s.ppsspp||{},l=s.live||{};
+  $('status').innerHTML=
+    row('Native APK',n.nativeOnline?'ONLINE':'OFFLINE',n.nativeOnline?'ok':'bad')+
+    row('UDP ACK',n.lastAck||'-',n.nativeOnline?'ok':'warn')+
+    row('PPSSPP',p.connected?'CONNECTED':'OFFLINE',p.connected?'ok':'bad')+
+    row('Game phase',p.gamePhase||'-',p.armed?'ok':'warn')+
+    row('HP',`${p.p1HP??'-'} / ${p.p2HP??'-'}`)+
+    row('TikTools',l.status||'-',l.connected?'ok':'warn')+
+    row('Room',l.roomId||'-')+
+    row('Members',String(s.session?.memberCount??0));
+  $('p1').innerHTML=board(s.session?.leaderboardP1); $('p2').innerHTML=board(s.session?.leaderboardP2);
+  const a=s.session?.activePick;
+  if(!a){$('pick').textContent='Chưa có active pick window.'}
+  else{
+   let rem=a.locked?0:Math.max(0,Math.ceil((a.expiresAt-Date.now())/1000));
+   $('pick').textContent=`WINNER: ${a.winnerTeam}\nTOP1: ${a.top1Name} (${a.top1Score})\nSTATUS: ${a.status}\nREMAIN: ${rem}s\nPICK: ${a.pick??'-'} ${a.character??''}\nSOURCE SLOT: ${a.sourceSlot??'-'}`;
+  }
+  if(firstRules){$('giftRules').value=s.giftRules||'';firstRules=false}
+  const logs=(s.logs||[]).slice().reverse();
+  $('logs').innerHTML=logs.map(x=>`<div class="log ${esc(x.kind||'')}">[${new Date(x.at).toLocaleTimeString()}] ${esc(x.message)}</div>`).join('');
+ }catch(e){$('status').innerHTML=row('Server','OFFLINE','bad')+row('Error',e.message,'bad')}
+}
+setInterval(refresh,700);refresh();
+</script></body></html>

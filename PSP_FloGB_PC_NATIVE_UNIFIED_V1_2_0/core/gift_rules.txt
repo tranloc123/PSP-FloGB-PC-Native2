@@ -1,0 +1,9 @@
+# SCBD TikTok LIVE gift rules
+# Cú pháp: Tên quà=điểm mỗi quà
+# Dòng trống hoặc bắt đầu bằng # sẽ bị bỏ qua.
+#
+# Nếu quà không có trong file này, điểm fallback = diamondCount * repeatCount.
+# Ví dụ nếu muốn dùng bảng điểm riêng:
+# Rose=30
+# GG=30
+# Finger Heart=250

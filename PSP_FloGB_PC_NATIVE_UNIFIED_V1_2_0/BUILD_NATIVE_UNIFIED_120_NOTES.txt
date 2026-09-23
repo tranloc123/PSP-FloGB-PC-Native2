@@ -1,0 +1,5 @@
+PSP FloGB PC Native Unified V1.2.0
+- No external PPSSPP fallback.
+- Native patched Windows engine is compiled in GitHub Actions and bundled before Electron packaging.
+- Do not use BUILD_UNIFIED_110.bat for this branch.
+- Use .github/workflows/build-native-unified-windows.yml.

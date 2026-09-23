@@ -1,0 +1,54 @@
+{
+  "name": "psp-flogb",
+  "version": "1.2.0",
+  "description": "PSP FloGB PC Native Unified - bundled patched PPSSPP Windows engine + TikTok controller + APK parity UI",
+  "main": "main.js",
+  "author": "FloGB",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis portable",
+    "pack": "electron-builder --dir"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "38.8.6",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.flogb.pspflogb",
+    "productName": "PSP FloGB",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "live-preload.js",
+      "core/**/*",
+      "renderer/**/*",
+      "overlay/**/*",
+      "probe/**/*",
+      "assets/**/*",
+      "data/**/*",
+      "package.json",
+      "engine/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "PSP-FloGB-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "PSP FloGB"
+    },
+    "artifactName": "PSP-FloGB-Native-Unified-${version}-${arch}.${ext}"
+  }
+}
