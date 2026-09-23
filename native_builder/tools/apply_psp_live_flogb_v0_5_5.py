@@ -159,10 +159,12 @@ new_avatar = r'''static void DrawSCBDRankAvatar(
     int rank,
     bool showTierFrame
 ) {
+    const float avatarDrawRadius = showTierFrame ? radius * 0.80f : radius;
+
     ctx->Flush();
     ctx->BeginNoTex();
-    ctx->Draw()->FillCircle(cx, cy, radius + 1.0f, 32, 0xD0101218);
-    ctx->Draw()->FillCircle(cx, cy, radius, 32, user.color);
+    ctx->Draw()->FillCircle(cx, cy, avatarDrawRadius + 1.0f, 32, 0xD0101218);
+    ctx->Draw()->FillCircle(cx, cy, avatarDrawRadius, 32, user.color);
     ctx->Flush();
 
     if (showTierFrame)
@@ -171,8 +173,8 @@ new_avatar = r'''static void DrawSCBDRankAvatar(
     ctx->Begin();
     ctx->BindFontTexture();
     ctx->Draw()->SetFontScale(
-        radius <= 10.0f ? 0.24f : 0.28f,
-        radius <= 10.0f ? 0.24f : 0.28f
+        avatarDrawRadius <= 10.0f ? 0.24f : 0.28f,
+        avatarDrawRadius <= 10.0f ? 0.24f : 0.28f
     );
     ctx->Draw()->DrawText(
         font,
@@ -403,6 +405,7 @@ s = replace_once(s, old_rank_text, new_rank_text, "rendered rank numbers")
 
 for required in (
     "kSCBDRankFrameTuning[7]",
+    "avatarDrawRadius",
     "active != 3",
     "slot + 1, true",
     "rank_numbers_atlas.png",
