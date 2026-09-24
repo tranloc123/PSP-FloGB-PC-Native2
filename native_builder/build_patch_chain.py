@@ -863,13 +863,25 @@ rank_commands = r'''
     }
 
 '''
-unknown_anchor = '''    ++s.errors;
-    s.lastError = std::string("unknown command: ") + cmd;
-'''
+# patch_windows_native_bridge.py rewrites the bridge into a compact Windows form,
+# so do not depend on the old Android multi-line "unknown command" block.
+# Insert ranking handlers immediately before the final unknown-command fallback.
 if 'if (cmd == "RANK_ROW")' not in b:
-    if unknown_anchor not in b:
-        raise SystemExit('Unified 1.2.2 bridge command anchor missing')
-    b = b.replace(unknown_anchor, rank_commands + unknown_anchor, 1)
+    compact_anchor = '    ++s.errors; s.lastError = "unknown command: " + cmd; Reply(s, peer, peerLen, cmd, false, "unknown-command");\n'
+    android_anchor = '''    ++s.errors;
+    s.lastError = std::string("unknown command: ") + cmd;
+    Reply(s, peer, peerLen, cmd, false, "unknown-command");
+'''
+    if compact_anchor in b:
+        b = b.replace(compact_anchor, rank_commands + compact_anchor, 1)
+    elif android_anchor in b:
+        b = b.replace(android_anchor, rank_commands + android_anchor, 1)
+    else:
+        # Last-resort structural anchor: place handlers before HandlePacket closes.
+        fallback = '\n}\n\ninline void Process() {\n'
+        if fallback not in b:
+            raise SystemExit('Unified 1.2.2 bridge command anchor missing: neither Windows nor Android fallback found')
+        b = b.replace(fallback, '\n' + rank_commands + fallback, 1)
 bridge_path.write_text(b, encoding='utf-8')
 
 # Sender methods.
