@@ -607,4 +607,698 @@ replace_exact_in_file(
 
 print('Unified PC gameplay hotfix 1.2.1 source patch applied')
 
+
+# ---------------------------------------------------------------------------
+# Unified PC hotfix 1.2.2
+# 1) Gauge anti-flicker patch 0x08836E18 from confirmed Android baseline.
+# 2) Explicit DOWN -> hold -> UP for test buttons / Gift Rule input.
+# 3) Replace native mock rankings with runtime real ranking transport.
+# ---------------------------------------------------------------------------
+
+project_root = ROOT.parent
+controller = project_root / 'core' / 'controller-service.js'
+main_js = project_root / 'main.js'
+renderer_js = project_root / 'renderer' / 'app.js'
+native_sender = project_root / 'core' / 'native_sender_v059.js'
+
+# ---- 1. Gauge / HP visual sync ----------------------------------------------
+replace_exact_in_file(
+    controller,
+    '''  0x08835D50,
+  0x08816178,
+''',
+    '''  0x08835D50,
+  0x08836E18, // Android V1.4B/V1.6 confirmed gauge anti-flicker patch
+  0x08816178,
+''',
+    'add gauge anti-flicker opcode'
+)
+
+# ---- 2. Input must release before the temporary debugger socket closes -------
+replace_exact_in_file(
+    main_js,
+    '''tap:(button,duration=2)=>ws.send(JSON.stringify({event:'input.buttons.press',ticket:ticket++,button,duration}))''',
+    '''tap:async(button,duration=2)=>{
+        button=button==='l'?'ltrigger':button==='r'?'rtrigger':button;
+        const holdMs=Math.max(45,Math.min(140,Number(duration||1)*35));
+        ws.send(JSON.stringify({event:'input.buttons.send',ticket:ticket++,buttons:{[button]:true}}));
+        await new Promise(r=>setTimeout(r,holdMs));
+        ws.send(JSON.stringify({event:'input.buttons.send',ticket:ticket++,buttons:{[button]:false}}));
+        await new Promise(r=>setTimeout(r,45));
+      }''',
+    'explicit PSP button down/up'
+)
+
+replace_exact_in_file(
+    main_js,
+    '''await ppssppCommand(async api=>{for(let i=0;i<count;i++){api.tap(button,2);await new Promise(r=>setTimeout(r,gap));}}); return;''',
+    '''await ppssppCommand(async api=>{for(let i=0;i<count;i++){await api.tap(button,2);await new Promise(r=>setTimeout(r,gap));}}); return;''',
+    'await Gift Rule button release'
+)
+
+replace_exact_in_file(
+    renderer_js,
+    '''<button data-psp="l">L</button><button data-psp="r">R</button>''',
+    '''<button data-psp="ltrigger">L</button><button data-psp="rtrigger">R</button>''',
+    'correct L/R debugger button names'
+)
+
+# ---- 3. Runtime native ranking data -----------------------------------------
+rank_data_h = r'''#pragma once
+
+#include <array>
+#include <cstdint>
+#include <string>
+
+namespace SCBDNativeRankData {
+
+enum class List {
+    MATCH_P1 = 0,
+    MATCH_P2 = 1,
+    WEEK = 2,
+    MONTH = 3,
+    STREAK = 4,
+    UNKNOWN = 99,
+};
+
+struct Row {
+    bool valid = false;
+    std::string name;
+    std::string initial;
+    std::string avatarUrl;
+    int score = 0;
+    int current = 0;
+    int best = 0;
+    uint32_t color = 0xE0606875;
+};
+
+inline uint32_t ColorForName(const std::string &name) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : name) {
+        h ^= c;
+        h *= 16777619u;
+    }
+    const uint32_t r = 72u + ((h >> 0) & 0x7Fu);
+    const uint32_t g = 72u + ((h >> 8) & 0x7Fu);
+    const uint32_t b = 72u + ((h >> 16) & 0x7Fu);
+    return 0xE0000000u | (b << 16) | (g << 8) | r;
+}
+
+inline std::string InitialFor(const std::string &name) {
+    if (name.empty())
+        return "?";
+    unsigned char c = static_cast<unsigned char>(name[0]);
+    if (c < 0x80)
+        return std::string(1, static_cast<char>(c));
+    return "*";
+}
+
+inline List ParseList(const std::string &s) {
+    if (s == "MATCH_P1") return List::MATCH_P1;
+    if (s == "MATCH_P2") return List::MATCH_P2;
+    if (s == "WEEK") return List::WEEK;
+    if (s == "MONTH") return List::MONTH;
+    if (s == "STREAK") return List::STREAK;
+    return List::UNKNOWN;
+}
+
+inline std::array<Row, 100> &Rows(List list) {
+    static std::array<Row, 100> matchP1{};
+    static std::array<Row, 100> matchP2{};
+    static std::array<Row, 100> week{};
+    static std::array<Row, 100> month{};
+    static std::array<Row, 100> streak{};
+    switch (list) {
+    case List::MATCH_P1: return matchP1;
+    case List::MATCH_P2: return matchP2;
+    case List::MONTH: return month;
+    case List::STREAK: return streak;
+    case List::WEEK:
+    default: return week;
+    }
+}
+
+inline std::array<std::array<Row, 3>, 28> &CharacterRows() {
+    static std::array<std::array<Row, 3>, 28> rows{};
+    return rows;
+}
+
+inline void Clear(List list) {
+    if (list == List::UNKNOWN)
+        return;
+    for (auto &r : Rows(list))
+        r = Row{};
+}
+
+inline void ClearCharacters() {
+    for (auto &ch : CharacterRows())
+        for (auto &r : ch)
+            r = Row{};
+}
+
+inline void SetRow(List list, int index, const std::string &name, int score,
+                   const std::string &avatarUrl, int current, int best) {
+    if (list == List::UNKNOWN || index < 0 || index >= 100)
+        return;
+    Row &r = Rows(list)[index];
+    r.valid = true;
+    r.name = name;
+    r.initial = InitialFor(name);
+    r.avatarUrl = avatarUrl;
+    r.score = score;
+    r.current = current;
+    r.best = best;
+    r.color = ColorForName(name);
+}
+
+inline void SetCharacterRow(int characterIndex, int slot, const std::string &name,
+                            int score, const std::string &avatarUrl) {
+    if (characterIndex < 0 || characterIndex >= 28 || slot < 0 || slot >= 3)
+        return;
+    Row &r = CharacterRows()[characterIndex][slot];
+    r.valid = true;
+    r.name = name;
+    r.initial = InitialFor(name);
+    r.avatarUrl = avatarUrl;
+    r.score = score;
+    r.color = ColorForName(name);
+}
+
+}  // namespace SCBDNativeRankData
+'''
+(REPO / 'SCBD' / 'SCBDNativeRankData.h').write_text(rank_data_h, encoding='utf-8')
+
+# Extend UDP bridge.
+bridge_path = must('SCBD/SCBDNativeLiveBridge.h')
+b = bridge_path.read_text(encoding='utf-8')
+bridge_inc_anchor = '#include "SCBD/SCBDNativeWinner.h"\n'
+rank_inc = '#include "SCBD/SCBDNativeRankData.h"\n'
+if rank_inc not in b:
+    if bridge_inc_anchor not in b:
+        raise SystemExit('Unified 1.2.2 bridge include anchor missing')
+    b = b.replace(bridge_inc_anchor, bridge_inc_anchor + rank_inc, 1)
+
+rank_commands = r'''
+    if (cmd == "RANK_CLEAR") {
+        if (parts.size() < 2) {
+            Reply(s, peer, peerLen, "RANK_CLEAR", false, "bad-fields");
+            return;
+        }
+        const auto list = SCBDNativeRankData::ParseList(parts[1]);
+        if (list == SCBDNativeRankData::List::UNKNOWN) {
+            Reply(s, peer, peerLen, "RANK_CLEAR", false, "bad-list");
+            return;
+        }
+        SCBDNativeRankData::Clear(list);
+        Reply(s, peer, peerLen, "RANK_CLEAR", true);
+        return;
+    }
+
+    if (cmd == "RANK_ROW") {
+        if (parts.size() < 8) {
+            Reply(s, peer, peerLen, "RANK_ROW", false, "bad-fields");
+            return;
+        }
+        const auto list = SCBDNativeRankData::ParseList(parts[1]);
+        const int index = ParseInt(parts[2], -1);
+        if (list == SCBDNativeRankData::List::UNKNOWN || index < 0 || index >= 100) {
+            Reply(s, peer, peerLen, "RANK_ROW", false, "bad-index");
+            return;
+        }
+        SCBDNativeRankData::SetRow(
+            list, index, UrlDecode(parts[3]),
+            std::max(0, ParseInt(parts[4], 0)),
+            UrlDecode(parts[5]),
+            std::max(0, ParseInt(parts[6], 0)),
+            std::max(0, ParseInt(parts[7], 0))
+        );
+        Reply(s, peer, peerLen, "RANK_ROW", true);
+        return;
+    }
+
+    if (cmd == "CHAR_CLEAR") {
+        SCBDNativeRankData::ClearCharacters();
+        Reply(s, peer, peerLen, "CHAR_CLEAR", true);
+        return;
+    }
+
+    if (cmd == "CHAR_ROW") {
+        if (parts.size() < 6) {
+            Reply(s, peer, peerLen, "CHAR_ROW", false, "bad-fields");
+            return;
+        }
+        const int characterIndex = ParseInt(parts[1], -1);
+        const int slot = ParseInt(parts[2], -1);
+        if (characterIndex < 0 || characterIndex >= 28 || slot < 0 || slot >= 3) {
+            Reply(s, peer, peerLen, "CHAR_ROW", false, "bad-index");
+            return;
+        }
+        SCBDNativeRankData::SetCharacterRow(
+            characterIndex, slot, UrlDecode(parts[3]),
+            std::max(0, ParseInt(parts[4], 0)),
+            UrlDecode(parts[5])
+        );
+        Reply(s, peer, peerLen, "CHAR_ROW", true);
+        return;
+    }
+
+'''
+unknown_anchor = '''    ++s.errors;
+    s.lastError = std::string("unknown command: ") + cmd;
+'''
+if 'if (cmd == "RANK_ROW")' not in b:
+    if unknown_anchor not in b:
+        raise SystemExit('Unified 1.2.2 bridge command anchor missing')
+    b = b.replace(unknown_anchor, rank_commands + unknown_anchor, 1)
+bridge_path.write_text(b, encoding='utf-8')
+
+# Sender methods.
+ns = native_sender.read_text(encoding='utf-8')
+sender_insert = r'''
+async function sendRankSnapshot(list, rows, limit = 100) {
+  const safeList = String(list || '').toUpperCase();
+  await sendRaw(`RANK_CLEAR\t${safeList}`);
+  const src = Array.isArray(rows) ? rows.slice(0, limit) : [];
+  for (let i = 0; i < src.length; i++) {
+    const r = src[i] || {};
+    await sendRaw(
+      `RANK_ROW\t${safeList}\t${i}\t${enc(r.name || r.username || r.uniqueId || '')}` +
+      `\t${Math.max(0, Number(r.score) || 0)}\t${enc(r.avatar || '')}` +
+      `\t${Math.max(0, Number(r.current) || 0)}\t${Math.max(0, Number(r.best) || 0)}`
+    );
+  }
+}
+
+async function sendCharacterSnapshot(characters) {
+  await sendRaw('CHAR_CLEAR');
+  const groups = Array.isArray(characters) ? characters.slice(0, 28) : [];
+  for (let ci = 0; ci < groups.length; ci++) {
+    const rows = Array.isArray(groups[ci]) ? groups[ci].slice(0, 3) : [];
+    for (let slot = 0; slot < rows.length; slot++) {
+      const r = rows[slot] || {};
+      await sendRaw(
+        `CHAR_ROW\t${ci}\t${slot}\t${enc(r.name || r.username || r.uniqueId || '')}` +
+        `\t${Math.max(0, Number(r.score) || 0)}\t${enc(r.avatar || '')}`
+      );
+    }
+  }
+}
+
+'''
+if 'async function sendRankSnapshot(' not in ns:
+    anchor = 'function getStatus() {\n'
+    if anchor not in ns:
+        raise SystemExit('Unified 1.2.2 native sender anchor missing')
+    ns = ns.replace(anchor, sender_insert + anchor, 1)
+
+exports_anchor = '''  sendCancel,
+  getStatus,
+};'''
+if 'sendRankSnapshot,' not in ns:
+    if exports_anchor not in ns:
+        raise SystemExit('Unified 1.2.2 native sender exports anchor missing')
+    ns = ns.replace(
+        exports_anchor,
+        '''  sendCancel,
+  sendRankSnapshot,
+  sendCharacterSnapshot,
+  getStatus,
+};''',
+        1
+    )
+native_sender.write_text(ns, encoding='utf-8')
+
+# Real streaks.
+replace_exact_in_file(
+    controller,
+    '''      score: 0,
+      gifts: 0,
+      joinedAt: now(),
+''',
+    '''      score: 0,
+      gifts: 0,
+      currentStreak: 0,
+      bestStreak: 0,
+      joinedAt: now(),
+''',
+    'controller real streak member fields'
+)
+
+replace_exact_in_file(
+    controller,
+    '''      gifts:m.gifts,
+    }));
+}
+
+function top1(team) {
+''',
+    '''      gifts:m.gifts,
+      currentStreak:m.currentStreak || 0,
+      bestStreak:m.bestStreak || 0,
+    }));
+}
+
+function streakLeaderboard(limit = 100) {
+  return [...session.members.values()]
+    .filter(m => !!m.team)
+    .sort((a,b) =>
+      ((b.bestStreak || 0) - (a.bestStreak || 0)) ||
+      ((b.currentStreak || 0) - (a.currentStreak || 0)) ||
+      ((b.score || 0) - (a.score || 0)) ||
+      (a.joinedAt - b.joinedAt)
+    )
+    .slice(0, limit)
+    .map(m => ({
+      key:m.key, username:m.displayName, avatar:m.avatar,
+      current:m.currentStreak || 0, best:m.bestStreak || 0,
+      score:m.bestStreak || 0,
+    }));
+}
+
+function top1(team) {
+''',
+    'controller real streak leaderboard'
+)
+
+replace_exact_in_file(
+    controller,
+    '''    session.rounds += 1;
+    session.lastMatch = { loser, winnerTeam, at:now(), round:session.rounds };
+''',
+    '''    for (const m of session.members.values()) {
+      if (!m.team) continue;
+      if (m.team === winnerTeam) {
+        m.currentStreak = (m.currentStreak || 0) + 1;
+        m.bestStreak = Math.max(m.bestStreak || 0, m.currentStreak);
+      } else {
+        m.currentStreak = 0;
+      }
+    }
+    session.rounds += 1;
+    session.lastMatch = { loser, winnerTeam, at:now(), round:session.rounds };
+''',
+    'controller update real streak on KO'
+)
+
+replace_exact_in_file(
+    controller,
+    '''      leaderboardP2:leaderboard('P2', 20),
+      activePick:a,
+''',
+    '''      leaderboardP2:leaderboard('P2', 20),
+      leaderboardStreak:streakLeaderboard(100),
+      activePick:a,
+''',
+    'controller expose real streak'
+)
+
+# Main rank sync.
+replace_exact_in_file(
+    main_js,
+    '''const WebSocket = require('ws');
+''',
+    '''const WebSocket = require('ws');
+const nativeSender = require('./core/native_sender_v059');
+''',
+    'main native rank sender import'
+)
+
+main_rank_helpers = r'''
+let nativeRankPushBusy = false;
+const nativeRankHashes = new Map();
+let lastCharacterPickToken = '';
+
+const NATIVE_CHARACTER_ORDER = [
+  'ALGOL','AMY','ASTAROTH','CASSANDRA','CERVANTES','DAMPIERRE','HILDE',
+  'IVY','KILIK','KRATOS','LIZARDMAN','MAXI','MITSURUGI','NIGHTMARE',
+  'RAPHAEL','ROCK','SEONG_MI_NA','SETSUKA','SIEGFRIED','SOPHITIA','TAKI',
+  'TALIM','TIRA','VOLDO','XIANGHUA','YOSHIMITSU','YUN_SEONG','ZASALAMEL'
+];
+function normCharacter(v){return String(v||'').toUpperCase().replace(/[^A-Z0-9]/g,'');}
+function scoreSince(u, days){
+  const cut=new Date(); cut.setHours(0,0,0,0); cut.setDate(cut.getDate()-(days-1));
+  let total=0;
+  for(const [d,v] of Object.entries(u.daily||{})){
+    const dt=new Date(d+'T00:00:00');
+    if(dt>=cut) total+=Number(v||0);
+  }
+  return total;
+}
+function persistentRows(days){
+  const db=readJson(RANKINGS_FILE,{users:{}});
+  return Object.values(db.users||{}).map(u=>({
+    name:u.uniqueId||u.nickname||u.id||'viewer',
+    avatar:u.avatar||'', score:scoreSince(u,days),
+  })).filter(r=>r.score>0).sort((a,b)=>b.score-a.score).slice(0,100);
+}
+function characterRows(){
+  const db=readJson(RANKINGS_FILE,{users:{}});
+  return NATIVE_CHARACTER_ORDER.map(ch=>{
+    const key=normCharacter(ch);
+    return Object.values(db.users||{}).map(u=>({
+      name:u.uniqueId||u.nickname||u.id||'viewer',
+      avatar:u.avatar||'', score:Number((u.characters||{})[key]||0),
+    })).filter(r=>r.score>0).sort((a,b)=>b.score-a.score).slice(0,3);
+  });
+}
+function trackCharacterPick(state){
+  const a=state?.session?.activePick;
+  if(!a || a.status!=='success' || !a.top1Key || !a.character)return;
+  const token=[state?.session?.rounds||0,a.top1Key,a.character,a.decisionAt||0].join('|');
+  if(token===lastCharacterPickToken)return;
+  lastCharacterPickToken=token;
+  const db=readJson(RANKINGS_FILE,{users:{}});
+  const id=String(a.top1Key);
+  const u=db.users[id]||{id,uniqueId:a.top1Name||id,nickname:'',avatar:a.top1Avatar||'',total:0,gifts:0,likes:0,daily:{},characters:{}};
+  u.characters=u.characters||{};
+  const ck=normCharacter(a.character);
+  u.characters[ck]=Number(u.characters[ck]||0)+1;
+  db.users[id]=u;
+  writeJson(RANKINGS_FILE,db);
+}
+async function pushRankIfChanged(list,rows){
+  const sig=JSON.stringify(rows);
+  if(nativeRankHashes.get(list)===sig)return;
+  nativeRankHashes.set(list,sig);
+  await nativeSender.sendRankSnapshot(list,rows);
+}
+async function pushRealNativeRankings(state){
+  if(nativeRankPushBusy)return;
+  nativeRankPushBusy=true;
+  try{
+    const ses=state?.session||{};
+    await pushRankIfChanged('MATCH_P1',(ses.leaderboardP1||[]).slice(0,10).map(r=>({name:r.username,avatar:r.avatar,score:r.score})));
+    await pushRankIfChanged('MATCH_P2',(ses.leaderboardP2||[]).slice(0,10).map(r=>({name:r.username,avatar:r.avatar,score:r.score})));
+    await pushRankIfChanged('STREAK',(ses.leaderboardStreak||[]).slice(0,100).map(r=>({name:r.username,avatar:r.avatar,score:r.best,current:r.current,best:r.best})));
+    await pushRankIfChanged('WEEK',persistentRows(7));
+    await pushRankIfChanged('MONTH',persistentRows(30));
+    const chars=characterRows();
+    const csig=JSON.stringify(chars);
+    if(nativeRankHashes.get('CHAR')!==csig){
+      nativeRankHashes.set('CHAR',csig);
+      await nativeSender.sendCharacterSnapshot(chars);
+    }
+  }catch(e){
+    sendLog('Native ranking sync: '+e.message,'error');
+  }finally{
+    nativeRankPushBusy=false;
+  }
+}
+
+'''
+m = main_js.read_text(encoding='utf-8')
+if 'function pushRealNativeRankings(' not in m:
+    rank_anchor = "function stableName(user={}){ return String(user.uniqueId||user.nickname||user.id||'viewer'); }\n"
+    if rank_anchor not in m:
+        raise SystemExit('Unified 1.2.2 main rank helper anchor missing')
+    m = m.replace(rank_anchor, rank_anchor + main_rank_helpers, 1)
+    main_js.write_text(m, encoding='utf-8')
+
+replace_exact_in_file(
+    main_js,
+    '''      lastControllerState=await getState();
+      if(win && !win.isDestroyed()) win.webContents.send('controller-state',lastControllerState);
+''',
+    '''      lastControllerState=await getState();
+      trackCharacterPick(lastControllerState);
+      pushRealNativeRankings(lastControllerState).catch(()=>{});
+      if(win && !win.isDestroyed()) win.webContents.send('controller-state',lastControllerState);
+''',
+    'main push real native ranking data'
+)
+
+# Native in-game match/ranking UI.
+debug = must('UI/DebugOverlay.cpp')
+d = debug.read_text(encoding='utf-8')
+rank_include = '#include "SCBD/SCBDNativeRankData.h"\n'
+if rank_include not in d:
+    inc_anchor = '#include "SCBD/SCBDNativeLiveBridge.h"\n'
+    if inc_anchor not in d:
+        raise SystemExit('Unified 1.2.2 DebugOverlay rank include anchor missing')
+    d = d.replace(inc_anchor, inc_anchor + rank_include, 1)
+
+mock_start = d.find('static const SCBDMatchMockRow kSCBDP1MockRows[] = {')
+mock_end = d.find('static void BuildSCBDTop5(', mock_start)
+if mock_start < 0 or mock_end < 0:
+    raise SystemExit('Unified 1.2.2 match mock block not found')
+live_match_helper = r'''static int BuildSCBDLiveRows(
+    SCBDNativeRankData::List list,
+    SCBDMatchMockRow out[10]
+) {
+    int count = 0;
+    const auto &src = SCBDNativeRankData::Rows(list);
+    for (const auto &r : src) {
+        if (!r.valid) continue;
+        if (count >= 10) break;
+        out[count] = SCBDMatchMockRow{
+            r.initial.c_str(), r.name.c_str(), r.score, r.color
+        };
+        ++count;
+    }
+    return count;
+}
+
+'''
+d = d[:mock_start] + live_match_helper + d[mock_end:]
+
+old_build = '''    BuildSCBDTop5(kSCBDP1MockRows, static_cast<int>(sizeof(kSCBDP1MockRows) / sizeof(kSCBDP1MockRows[0])), p1Top);
+    BuildSCBDTop5(kSCBDP2MockRows, static_cast<int>(sizeof(kSCBDP2MockRows) / sizeof(kSCBDP2MockRows[0])), p2Top);
+'''
+new_build = '''    SCBDMatchMockRow p1Live[10];
+    SCBDMatchMockRow p2Live[10];
+    const int p1Count = BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P1, p1Live);
+    const int p2Count = BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P2, p2Live);
+    BuildSCBDTop5(p1Live, p1Count, p1Top);
+    BuildSCBDTop5(p2Live, p2Count, p2Top);
+'''
+if old_build not in d:
+    raise SystemExit('Unified 1.2.2 match mock usage not found')
+d = d.replace(old_build, new_build)
+
+rank_page_start = d.find('    if (page == Panel::RANK) {\n')
+rank_page_end = d.find('    if (page == Panel::DEV) {\n', rank_page_start)
+if rank_page_start < 0 or rank_page_end < 0:
+    raise SystemExit('Unified 1.2.2 in-game rank page block not found')
+
+real_rank_page = r'''    if (page == Panel::RANK) {
+        static const char *tabs[4] = {"TOP TUAN","TOP THANG","TOP NHAN VAT","CHUOI WIN"};
+        const int active = RankTab();
+        for (int i = 0; i < 4; ++i)
+            DrawSCBDLayerButton(ctx, font, RankTabRect(i, sw, sh), tabs[i], i == active ? 0xEE9B7427 : 0xCC2A3240);
+
+        const Rect list = RankListRect(sw, sh);
+        const float rowH = 36.0f;
+        const float scroll = RankScroll();
+        const int total = RankRowCount();
+        const int first = std::max(0, static_cast<int>(scroll / rowH));
+        const float yoff = -(scroll - first * rowH);
+        static const char *chars[28] = {
+            "ALGOL","AMY","ASTAROTH","CASSANDRA","CERVANTES","DAMPIERRE","HILDE",
+            "IVY","KILIK","KRATOS","LIZARDMAN","MAXI","MITSURUGI","NIGHTMARE",
+            "RAPHAEL","ROCK","SEONG_MI_NA","SETSUKA","SIEGFRIED","SOPHITIA","TAKI",
+            "TALIM","TIRA","VOLDO","XIANGHUA","YOSHIMITSU","YUN_SEONG","ZASALAMEL"
+        };
+
+        ctx->Flush();
+        ctx->BeginNoTex();
+        ctx->Draw()->Rect(list.x, list.y, list.w, list.h, 0xB810141C);
+        ctx->Flush();
+        ctx->Begin();
+        ctx->BindFontTexture();
+
+        const auto listType =
+            active == 0 ? SCBDNativeRankData::List::WEEK :
+            active == 1 ? SCBDNativeRankData::List::MONTH :
+                          SCBDNativeRankData::List::STREAK;
+        const auto &liveRows = SCBDNativeRankData::Rows(listType);
+        const auto &charRows = SCBDNativeRankData::CharacterRows();
+
+        for (int i = first; i < total; ++i) {
+            const float y = list.y + yoff + (i - first) * rowH;
+            if (y > list.y + list.h - 2.0f) break;
+            if (y + rowH < list.y) continue;
+
+            const float cy = y + rowH * 0.5f;
+            const uint32_t rowColor = (i % 2) ? 0x8C1D2430 : 0xA8252C38;
+
+            if (active == 2) {
+                bool any = false;
+                for (int slot = 0; slot < 3; ++slot) any = any || charRows[i][slot].valid;
+                if (!any) continue;
+            } else {
+                if (i >= 100 || !liveRows[i].valid) continue;
+            }
+
+            ctx->Flush();
+            ctx->BeginNoTex();
+            ctx->Draw()->Rect(list.x + 3.0f, y + 1.0f, list.w - 6.0f, rowH - 2.0f, rowColor);
+            ctx->Flush();
+            ctx->Begin();
+            ctx->BindFontTexture();
+
+            DrawSCBDRankNumber(ctx, i + 1, list.x + 10.0f, cy,
+                active == 2 ? 21.0f : 18.0f, 0xFFFFD86A);
+
+            if (active == 2) {
+                const float portraitX = list.x + 43.0f;
+                const float portraitW = 62.0f;
+                const float portraitH = rowH - 1.0f;
+                DrawSCBDCharacterPortraitSlot(ctx, font, chars[i], i, portraitX, y + 0.5f, portraitW, portraitH);
+                ctx->Draw()->SetFontScale(0.34f, 0.34f);
+                ctx->Draw()->DrawText(font, chars[i], portraitX + portraitW + 12.0f, cy, 0xFFFFFFFF, ALIGN_VCENTER | FLAG_DYNAMIC_ASCII);
+
+                const float usersStart = list.x + std::min(292.0f, list.w * 0.36f);
+                const float userColumnW = (list.x + list.w - usersStart - 8.0f) / 3.0f;
+                for (int slot = 0; slot < 3; ++slot) {
+                    const auto &rr = charRows[i][slot];
+                    if (!rr.valid) continue;
+                    SCBDRankAvatarMock user{rr.name.c_str(), rr.initial.c_str(), rr.color};
+                    const float colX = usersStart + userColumnW * slot;
+                    const float avatarX = colX + 15.0f;
+                    DrawSCBDRankAvatar(ctx, font, user, avatarX, cy, 10.5f, slot + 1, true);
+                    ctx->Draw()->SetFontScale(0.30f, 0.30f);
+                    ctx->Draw()->DrawTextRect(font, rr.name.c_str(), colX + 34.0f, y + 4.0f,
+                        userColumnW - 37.0f, rowH - 8.0f, 0xFFFFFFFF,
+                        ALIGN_VCENTER | FLAG_DYNAMIC_ASCII);
+                }
+            } else {
+                const auto &rr = liveRows[i];
+                SCBDRankAvatarMock user{rr.name.c_str(), rr.initial.c_str(), rr.color};
+                const float avatarX = list.x + 58.0f;
+                DrawSCBDRankAvatar(ctx, font, user, avatarX, cy, 11.0f, i + 1, active != 3);
+                ctx->Draw()->SetFontScale(0.34f, 0.34f);
+                ctx->Draw()->DrawText(font, rr.name.c_str(), list.x + 78.0f, cy, 0xFFFFFFFF, ALIGN_VCENTER | FLAG_DYNAMIC_ASCII);
+
+                char valueText[64];
+                if (active == 3)
+                    std::snprintf(valueText, sizeof(valueText), "CURRENT:%d  BEST:%d", rr.current, rr.best);
+                else
+                    std::snprintf(valueText, sizeof(valueText), "%d", rr.score);
+                ctx->Draw()->SetFontScale(0.34f, 0.34f);
+                ctx->Draw()->DrawText(font, valueText, list.x + list.w - 14.0f, cy,
+                    0xFFFFD77A, ALIGN_RIGHT | ALIGN_VCENTER | FLAG_DYNAMIC_ASCII);
+            }
+        }
+    }
+
+'''
+d = d[:rank_page_start] + real_rank_page + d[rank_page_end:]
+debug.write_text(d, encoding='utf-8')
+
+# Fail early before long MSBuild if this hotfix did not apply.
+checks = {
+    controller: ['0x08836E18', 'leaderboardStreak'],
+    main_js: ['input.buttons.send', 'pushRealNativeRankings', 'nativeSender.sendCharacterSnapshot'],
+    native_sender: ['sendRankSnapshot', 'sendCharacterSnapshot'],
+    debug: ['SCBDNativeRankData::List::MATCH_P1', 'CharacterRows()', 'CURRENT:%d  BEST:%d'],
+    bridge_path: ['RANK_ROW', 'CHAR_ROW'],
+}
+for path, needles in checks.items():
+    src = path.read_text(encoding='utf-8')
+    missing = [n for n in needles if n not in src]
+    if missing:
+        raise SystemExit(f'Unified 1.2.2 preflight missing in {path.name}: {missing}')
+
+print('Unified PC hotfix 1.2.2: gauge sync + explicit button release + REAL native rankings applied')
+
 print('=== PATCH CHAIN PASS ===')
