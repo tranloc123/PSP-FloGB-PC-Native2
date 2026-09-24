@@ -1,4 +1,4 @@
-name: Build PSP FloGB Native Unified V1.2.0 Windows
+name: Build PSP FloGB Native Unified V1.2.0 FIX7 Windows
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ env:
 
 jobs:
   build:
-    name: Native engine + Unified EXE x64
+    name: Native engine + Unified EXE x64 FIX7
     runs-on: windows-latest
     timeout-minutes: 150
 
@@ -46,9 +46,27 @@ jobs:
           git checkout "$env:PPSSPP_COMMIT"
           git submodule update --init --recursive
 
-      - name: Replay proven PSP FloGB APK patch chain
+      - name: Replay PSP FloGB patch chain plus FIX7
         shell: pwsh
-        run: python native_builder/build_patch_chain.py ppsspp
+        run: python native_builder/build_patch_chain_fix7.py ppsspp
+
+      - name: Fast syntax preflight before MSBuild
+        shell: pwsh
+        run: |
+          python -m py_compile native_builder/build_patch_chain.py
+          python -m py_compile native_builder/build_patch_chain_fix7.py
+          python -m py_compile native_builder/tools/patch_windows_native_bridge.py
+          python -m py_compile native_builder/tools/apply_pc_fix7.py
+
+          node --check core/controller-service.js
+          node --check core/native_sender_v059.js
+          node --check core/character_resolver_v059b.js
+          node --check main.js
+          node --check renderer/app.js
+          node --check live-preload.js
+          node --check probe/probe.js
+
+          Write-Host 'Python + Node syntax preflight PASS'
 
       - name: Native source preflight
         shell: pwsh
@@ -56,36 +74,78 @@ jobs:
           $debug = Get-Content ppsspp/UI/DebugOverlay.cpp -Raw
           $bridge = Get-Content ppsspp/SCBD/SCBDNativeLiveBridge.h -Raw
           $winner = Get-Content ppsspp/SCBD/SCBDNativeWinner.h -Raw
+          $controller = Get-Content core/controller-service.js -Raw
+          $main = Get-Content main.js -Raw
+
           @(
             'SCBDVirtualInput::Process();',
             'DrawSCBDMatchTop5HUD',
             'WINNER FINAL V0.5.8C',
             'SCBDNativeLiveBridge::Process();',
-            'DrawSCBDFinalHeroPortraitV059C'
+            'DrawSCBDFinalHeroPortraitV059C',
+            'BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P1',
+            'BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P2'
           ) | ForEach-Object {
             if (-not $debug.Contains($_)) {
               throw "Missing source marker: $_"
             }
           }
+
+          @('kSCBDP1MockRows','kSCBDP2MockRows','NEW-PLAYER','NEW-CHALLENGER','PLAYER-K','PLAYER-M') |
+            ForEach-Object {
+              if ($debug.Contains($_)) {
+                throw "Forbidden native mock marker survived: $_"
+              }
+            }
+
           if (-not $bridge.Contains('WSAStartup')) {
             throw 'Windows Winsock bridge patch missing'
+          }
+          if (-not $bridge.Contains('RANK_ROW') -or -not $bridge.Contains('CHAR_ROW')) {
+            throw 'REAL native ranking transport missing'
           }
           if (-not $winner.Contains('BeginWinnerPick')) {
             throw 'Winner/Pick core missing'
           }
-          Write-Host 'Native source preflight PASS'
+
+          @(
+            'GAUGE PATCH VERIFY',
+            'KO_TRANSITION_FAILED',
+            'VICTORY5_NOT_OBSERVED',
+            '/api/live/team',
+            '/api/live/gift',
+            '/api/live/comment',
+            "inputP2:'NOT_WIRED_GAME_INTERNAL_PATH'"
+          ) | ForEach-Object {
+            if (-not $controller.Contains($_)) {
+              throw "FIX7 controller marker missing: $_"
+            }
+          }
+
+          if ($controller.Contains('input.buttons.press')) {
+            throw 'Controller still contains held-button input.buttons.press path'
+          }
+
+          @('/api/live/team','/api/live/gift','/api/live/comment','user:e.user||{}') |
+            ForEach-Object {
+              if (-not $main.Contains($_)) {
+                throw "FIX7 main LIVE transport marker missing: $_"
+              }
+            }
+
+          Write-Host 'Native/source FIX7 preflight PASS'
 
       - name: Stamp native Windows engine version
         shell: pwsh
         run: |
           @'
-          const char *PPSSPP_GIT_VERSION = "PSP-FloGB-Native-Unified-1.2.0";
+          const char *PPSSPP_GIT_VERSION = "PSP-FloGB-Native-Unified-1.2.0-FIX7";
           #define PPSSPP_GIT_VERSION_NO_UPDATE 1
           '@ | Set-Content -Encoding ascii ppsspp/git-version.cpp
 
           @'
-          #define PPSSPP_WIN_VERSION_STRING "1.20.4-FloGB-1.2.0"
-          #define PPSSPP_WIN_VERSION_COMMA 1,20,4,120
+          #define PPSSPP_WIN_VERSION_STRING "1.20.4-FloGB-1.2.0-FIX7"
+          #define PPSSPP_WIN_VERSION_COMMA 1,20,4,127
           #define PPSSPP_WIN_VERSION_NO_UPDATE 1
           '@ | Set-Content -Encoding ascii ppsspp/Windows/win-version.h
 
@@ -105,10 +165,12 @@ jobs:
           Copy-Item $exe.FullName engine/PPSSPPWindows64.exe
           Copy-Item -Recurse ppsspp/assets engine/assets
           @"
-          PSP FloGB Native Engine bundled with Unified 1.2.0
+          PSP FloGB Native Engine bundled with Unified 1.2.0 FIX7
           Base commit: $env:PPSSPP_COMMIT
           UDP native bridge: 127.0.0.1:8796
           Debugger: ws://127.0.0.1:9000/debugger
+          FIX7: verified gauge patch + verified KO/Victory/Outro + real LIVE identity transport
+          P2 combat virtual input: NOT_WIRED until game-internal P2 path is traced
           "@ | Set-Content -Encoding utf8 engine/ENGINE_BUILD_INFO.txt
           if (-not (Test-Path engine/PPSSPPWindows64.exe)) {
             throw 'Engine copy failed'
@@ -144,10 +206,10 @@ jobs:
           }
           Get-ChildItem dist -File | Format-Table Name,Length
 
-      - name: Upload PSP FloGB Native Unified V1.2.0
+      - name: Upload PSP FloGB Native Unified V1.2.0 FIX7
         uses: actions/upload-artifact@v7
         with:
-          name: PSP-FloGB-Native-Unified-V1.2.0-Windows-x64
+          name: PSP-FloGB-Native-Unified-V1.2.0-FIX7-Windows-x64
           path: |
             dist/*.exe
             dist/*unpacked*/**
