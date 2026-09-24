@@ -366,25 +366,37 @@ replace_once(
     'renderer online init settings')
 
 # Unified gameplay patch 1.2.1 appends refreshTestGiftSelect() before init closes.
-# Accept that generated form first, while retaining a controlled fallback for
-# source trees where the tester injection is intentionally absent.
+# That same tail also appears elsewhere in renderer code, so never replace it
+# globally. Scope the edit strictly to async init() and its next btnOpenLive line.
 _renderer_src = must(renderer_js).read_text(encoding='utf-8')
-_init_tail_full = "renderGiftTable();refreshTestGiftSelect();}"
-_init_tail_base = "renderGiftTable();}"
-if _init_tail_full in _renderer_src:
-    replace_once(
-        renderer_js,
-        _init_tail_full,
-        "renderGiftTable();refreshTestGiftSelect();await refreshOnlineStatus();}",
-        'renderer online init tail')
-elif _init_tail_base in _renderer_src:
-    replace_once(
-        renderer_js,
-        _init_tail_base,
-        "renderGiftTable();await refreshOnlineStatus();}",
-        'renderer online init tail fallback')
-else:
-    raise SystemExit('FIX9 renderer online init tail: no supported init tail marker found')
+
+_init_full_pattern = (
+    r"(async function init\(\)\{.*?)"
+    r"(renderGiftTable\(\);refreshTestGiftSelect\(\);)"
+    r"(\})(?=\n\$\('btnOpenLive'\))"
+)
+_init_base_pattern = (
+    r"(async function init\(\)\{.*?)"
+    r"(renderGiftTable\(\);)"
+    r"(\})(?=\n\$\('btnOpenLive'\))"
+)
+
+def _patch_init_tail(src: str, pattern: str, label: str):
+    def repl(m):
+        return m.group(1) + m.group(2) + "await refreshOnlineStatus();" + m.group(3)
+    out, n = re.subn(pattern, repl, src, count=1, flags=re.S)
+    if n != 1:
+        return None
+    print(f'FIX9 {label}: PASS')
+    return out
+
+_patched = _patch_init_tail(_renderer_src, _init_full_pattern, 'renderer online init tail')
+if _patched is None:
+    _patched = _patch_init_tail(_renderer_src, _init_base_pattern, 'renderer online init tail fallback')
+if _patched is None:
+    raise SystemExit('FIX9 renderer online init tail: scoped init() marker not found')
+
+renderer_js.write_text(_patched, encoding='utf-8')
 
 replace_once(
     renderer_js,
