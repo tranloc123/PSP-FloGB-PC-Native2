@@ -356,11 +356,35 @@ settings_new = '''<section id="settings" class="tab"><div class="grid2"><div cla
 replace_once(renderer_html, settings_old, settings_new, 'Supabase settings UI')
 
 # Init settings values.
+# Do NOT match the entire init() line. Earlier gameplay patches intentionally
+# inject installGameTestConsole() at the beginning and refreshTestGiftSelect()
+# at the end, so an exact full-function anchor is brittle.
 replace_once(
     renderer_js,
-    "async function init(){const s=await ipcRenderer.invoke('get-settings');$('liveUsername').value=s.liveUsername||'';$('isoPath').value=s.isoPath||'';$('debuggerUrl').value=s.ppssppDebugger||'ws://127.0.0.1:9000/debugger';$('showOverlay').checked=s.showOverlay!==false;giftRules=await ipcRenderer.invoke('get-rules');learned=await ipcRenderer.invoke('get-learned-gifts');const eng=await ipcRenderer.invoke('get-engine-info');$('engineInfo').textContent=eng.bundledExists?`NATIVE FLOGB ENGINE: ${eng.bundledPath}`:`NATIVE ENGINE MISSING: bản build này không hợp lệ, hãy build lại bằng workflow Native Unified.`;renderGiftTable();}",
-    "async function init(){const s=await ipcRenderer.invoke('get-settings');$('liveUsername').value=s.liveUsername||'';$('isoPath').value=s.isoPath||'';$('debuggerUrl').value=s.ppssppDebugger||'ws://127.0.0.1:9000/debugger';$('showOverlay').checked=s.showOverlay!==false;$('onlineRankingEnabled').checked=s.onlineRankingEnabled===true;$('supabaseUrl').value=s.supabaseUrl||'';$('supabasePublishableKey').value=s.supabasePublishableKey||'';$('supabaseEmail').value=s.supabaseEmail||'';$('nativeRankingScope').value=s.nativeRankingScope||'local';giftRules=await ipcRenderer.invoke('get-rules');learned=await ipcRenderer.invoke('get-learned-gifts');const eng=await ipcRenderer.invoke('get-engine-info');$('engineInfo').textContent=eng.bundledExists?`NATIVE FLOGB ENGINE: ${eng.bundledPath}`:`NATIVE ENGINE MISSING: bản build này không hợp lệ, hãy build lại bằng workflow Native Unified.`;renderGiftTable();await refreshOnlineStatus();}",
-    'renderer online init')
+    "$('showOverlay').checked=s.showOverlay!==false;",
+    "$('showOverlay').checked=s.showOverlay!==false;$('onlineRankingEnabled').checked=s.onlineRankingEnabled===true;$('supabaseUrl').value=s.supabaseUrl||'';$('supabasePublishableKey').value=s.supabasePublishableKey||'';$('supabaseEmail').value=s.supabaseEmail||'';$('nativeRankingScope').value=s.nativeRankingScope||'local';",
+    'renderer online init settings')
+
+# Unified gameplay patch 1.2.1 appends refreshTestGiftSelect() before init closes.
+# Accept that generated form first, while retaining a controlled fallback for
+# source trees where the tester injection is intentionally absent.
+_renderer_src = must(renderer_js).read_text(encoding='utf-8')
+_init_tail_full = "renderGiftTable();refreshTestGiftSelect();}"
+_init_tail_base = "renderGiftTable();}"
+if _init_tail_full in _renderer_src:
+    replace_once(
+        renderer_js,
+        _init_tail_full,
+        "renderGiftTable();refreshTestGiftSelect();await refreshOnlineStatus();}",
+        'renderer online init tail')
+elif _init_tail_base in _renderer_src:
+    replace_once(
+        renderer_js,
+        _init_tail_base,
+        "renderGiftTable();await refreshOnlineStatus();}",
+        'renderer online init tail fallback')
+else:
+    raise SystemExit('FIX9 renderer online init tail: no supported init tail marker found')
 
 replace_once(
     renderer_js,
