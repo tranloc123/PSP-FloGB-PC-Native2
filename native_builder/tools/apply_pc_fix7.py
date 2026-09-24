@@ -36,7 +36,7 @@ def replace_once(path: Path, old: str, new: str, label: str) -> None:
 
 def regex_once(path: Path, pattern: str, replacement: str, label: str) -> None:
     src = must(path).read_text(encoding="utf-8")
-    out, count = re.subn(pattern, replacement, src, count=1, flags=re.S)
+    out, count = re.subn(pattern, lambda _m: replacement, src, count=1, flags=re.S)
     if count != 1:
         raise SystemExit(f"FIX7 {label}: expected 1 regex match, found {count}")
     path.write_text(out, encoding="utf-8")
