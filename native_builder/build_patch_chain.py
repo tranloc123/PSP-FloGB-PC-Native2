@@ -1313,4 +1313,69 @@ for path, needles in checks.items():
 
 print('Unified PC hotfix 1.2.2: gauge sync + explicit button release + REAL native rankings applied')
 
+# FIX6: V0.5.8C leaves another Match Top5 call site that still references
+# kSCBDP1MockRows/kSCBDP2MockRows after the arrays themselves were removed.
+# Replace every surviving pair structurally, regardless of whitespace/format.
+debug = must('UI/DebugOverlay.cpp')
+d = debug.read_text(encoding='utf-8')
+
+def replace_surviving_mock_pair(src: str):
+    lines = src.splitlines(keepends=True)
+    out = []
+    replaced = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if 'BuildSCBDTop5(kSCBDP1MockRows' in line:
+            j = i + 1
+            while j < len(lines) and not lines[j].strip():
+                j += 1
+            if j >= len(lines) or 'BuildSCBDTop5(kSCBDP2MockRows' not in lines[j]:
+                raise SystemExit(
+                    f'FIX6: found P1 mock call at generated DebugOverlay line {i+1} '
+                    'without matching P2 mock call'
+                )
+
+            indent = line[:len(line) - len(line.lstrip())]
+            out.extend([
+                indent + 'SCBDMatchMockRow p1LiveRuntime[10]{};\n',
+                indent + 'SCBDMatchMockRow p2LiveRuntime[10]{};\n',
+                indent + 'const int p1LiveCount = BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P1, p1LiveRuntime);\n',
+                indent + 'const int p2LiveCount = BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P2, p2LiveRuntime);\n',
+                indent + 'BuildSCBDTop5(p1LiveRuntime, p1LiveCount, p1Top);\n',
+                indent + 'BuildSCBDTop5(p2LiveRuntime, p2LiveCount, p2Top);\n',
+            ])
+            i = j + 1
+            replaced += 1
+            continue
+
+        out.append(line)
+        i += 1
+
+    return ''.join(out), replaced
+
+d, mock_call_pairs_fixed = replace_surviving_mock_pair(d)
+
+remaining_p1 = d.count('kSCBDP1MockRows')
+remaining_p2 = d.count('kSCBDP2MockRows')
+if remaining_p1 or remaining_p2:
+    for token in ('kSCBDP1MockRows', 'kSCBDP2MockRows'):
+        pos = d.find(token)
+        if pos >= 0:
+            print('FIX6 leftover context for', token)
+            print(d[max(0, pos - 300):pos + 500])
+    raise SystemExit(
+        f'FIX6 preflight: mock ranking identifiers survived '
+        f'P1={remaining_p1} P2={remaining_p2}'
+    )
+
+if 'BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P1' not in d:
+    raise SystemExit('FIX6 preflight: live P1 ranking call missing')
+if 'BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P2' not in d:
+    raise SystemExit('FIX6 preflight: live P2 ranking call missing')
+
+debug.write_text(d, encoding='utf-8')
+print(f'FIX6: removed {mock_call_pairs_fixed} surviving native Match Top5 mock call pair(s)')
+print('FIX6 preflight: kSCBDP1MockRows/kSCBDP2MockRows = 0')
+
 print('=== PATCH CHAIN PASS ===')
