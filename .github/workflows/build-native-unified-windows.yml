@@ -1,4 +1,4 @@
-name: Build PSP FloGB Native Unified V1.2.0 FIX7 Windows
+name: Build PSP FloGB Native Unified FINAL Windows
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ env:
 
 jobs:
   build:
-    name: Native engine + Unified EXE x64 FIX7
+    name: Native engine + Unified EXE x64 FINAL
     runs-on: windows-latest
     timeout-minutes: 150
 
@@ -46,17 +46,20 @@ jobs:
           git checkout "$env:PPSSPP_COMMIT"
           git submodule update --init --recursive
 
-      - name: Replay PSP FloGB patch chain plus FIX7
+      - name: Replay FINAL patch chain FIX7 + FIX8 + FIX9
         shell: pwsh
-        run: python native_builder/build_patch_chain_fix7.py ppsspp
+        run: python native_builder/build_patch_chain_final.py ppsspp
 
       - name: Fast syntax preflight before MSBuild
         shell: pwsh
         run: |
           python -m py_compile native_builder/build_patch_chain.py
           python -m py_compile native_builder/build_patch_chain_fix7.py
+          python -m py_compile native_builder/build_patch_chain_final.py
           python -m py_compile native_builder/tools/patch_windows_native_bridge.py
           python -m py_compile native_builder/tools/apply_pc_fix7.py
+          python -m py_compile native_builder/tools/apply_pc_fix8_rank_reset.py
+          python -m py_compile native_builder/tools/apply_pc_fix9_multistream_online.py
 
           node --check core/controller-service.js
           node --check core/native_sender_v059.js
@@ -68,84 +71,84 @@ jobs:
 
           Write-Host 'Python + Node syntax preflight PASS'
 
-      - name: Native source preflight
+      - name: FINAL source/security preflight
         shell: pwsh
         run: |
+          $main = Get-Content main.js -Raw
+          $renderer = Get-Content renderer/app.js -Raw
+          $html = Get-Content renderer/index.html -Raw
           $debug = Get-Content ppsspp/UI/DebugOverlay.cpp -Raw
           $bridge = Get-Content ppsspp/SCBD/SCBDNativeLiveBridge.h -Raw
           $winner = Get-Content ppsspp/SCBD/SCBDNativeWinner.h -Raw
           $controller = Get-Content core/controller-service.js -Raw
-          $main = Get-Content main.js -Raw
+          $pkg = Get-Content package.json -Raw
 
           @(
-            'SCBDVirtualInput::Process();',
-            'DrawSCBDMatchTop5HUD',
-            'WINNER FINAL V0.5.8C',
-            'SCBDNativeLiveBridge::Process();',
-            'DrawSCBDFinalHeroPortraitV059C',
+            "const RANK_TIME_ZONE = 'Asia/Ho_Chi_Minh';",
+            'weekScore','monthScore',
+            "persistentRows('weekScore')","persistentRows('monthScore')",
+            'online-score-queue.json','safeStorage','supabaseRpc',
+            'flogb_apply_score','flogb_leaderboard','enqueueOnlineScore(e,support)',
+            'selectedNativeOnlineRows()','startOnlineBackground()','restoreOnlineSession()'
+          ) | ForEach-Object {
+            if (-not $main.Contains($_)) { throw "FINAL main marker missing: $_" }
+          }
+
+          @('persistentRows(7)','persistentRows(30)','function scoreSince(u, days)','new Date(ts).toISOString().slice(0,10)') |
+            ForEach-Object {
+              if ($main.Contains($_)) { throw "Rolling/UTC ranking marker survived: $_" }
+            }
+
+          @('SUPABASE_SERVICE_ROLE_KEY','SUPABASE_SECRET_KEYS','sb_secret_') |
+            ForEach-Object {
+              if ($main.Contains($_)) { throw "SECURITY STOP: desktop contains secret-key marker: $_" }
+            }
+
+          @('rankScope','btnOnlineLogin','get-online-rankings','nativeRankingScope') |
+            ForEach-Object {
+              if (-not ($renderer.Contains($_) -or $html.Contains($_))) { throw "Online renderer marker missing: $_" }
+            }
+
+          @(
+            'SCBDVirtualInput::Process();','DrawSCBDMatchTop5HUD','WINNER FINAL V0.5.8C',
+            'SCBDNativeLiveBridge::Process();','DrawSCBDFinalHeroPortraitV059C',
             'BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P1',
             'BuildSCBDLiveRows(SCBDNativeRankData::List::MATCH_P2'
           ) | ForEach-Object {
-            if (-not $debug.Contains($_)) {
-              throw "Missing source marker: $_"
-            }
+            if (-not $debug.Contains($_)) { throw "Native marker missing: $_" }
           }
 
           @('kSCBDP1MockRows','kSCBDP2MockRows','NEW-PLAYER','NEW-CHALLENGER','PLAYER-K','PLAYER-M') |
             ForEach-Object {
-              if ($debug.Contains($_)) {
-                throw "Forbidden native mock marker survived: $_"
-              }
+              if ($debug.Contains($_)) { throw "Forbidden native mock marker survived: $_" }
             }
 
-          if (-not $bridge.Contains('WSAStartup')) {
-            throw 'Windows Winsock bridge patch missing'
-          }
-          if (-not $bridge.Contains('RANK_ROW') -or -not $bridge.Contains('CHAR_ROW')) {
-            throw 'REAL native ranking transport missing'
-          }
-          if (-not $winner.Contains('BeginWinnerPick')) {
-            throw 'Winner/Pick core missing'
-          }
+          if (-not $bridge.Contains('WSAStartup')) { throw 'Windows Winsock bridge patch missing' }
+          if (-not $bridge.Contains('RANK_ROW') -or -not $bridge.Contains('CHAR_ROW')) { throw 'REAL native ranking transport missing' }
+          if (-not $winner.Contains('BeginWinnerPick')) { throw 'Winner/Pick core missing' }
 
-          @(
-            'GAUGE PATCH VERIFY',
-            'KO_TRANSITION_FAILED',
-            'VICTORY5_NOT_OBSERVED',
-            '/api/live/team',
-            '/api/live/gift',
-            '/api/live/comment',
-            "inputP2:'NOT_WIRED_GAME_INTERNAL_PATH'"
-          ) | ForEach-Object {
-            if (-not $controller.Contains($_)) {
-              throw "FIX7 controller marker missing: $_"
-            }
-          }
-
-          if ($controller.Contains('input.buttons.press')) {
-            throw 'Controller still contains held-button input.buttons.press path'
-          }
-
-          @('/api/live/team','/api/live/gift','/api/live/comment','user:e.user||{}') |
+          @('GAUGE PATCH VERIFY','KO_TRANSITION_FAILED','VICTORY5_NOT_OBSERVED','/api/live/team','/api/live/gift','/api/live/comment',"inputP2:'NOT_WIRED_GAME_INTERNAL_PATH'") |
             ForEach-Object {
-              if (-not $main.Contains($_)) {
-                throw "FIX7 main LIVE transport marker missing: $_"
-              }
+              if (-not $controller.Contains($_)) { throw "FIX7 controller marker missing: $_" }
             }
 
-          Write-Host 'Native/source FIX7 preflight PASS'
+          if ($controller.Contains('input.buttons.press')) { throw 'Controller still contains held-button input.buttons.press path' }
+          if (-not $pkg.Contains('--publish never')) { throw 'package.json missing --publish never' }
+          if (-not $pkg.Contains('-Setup.${ext}') -or -not $pkg.Contains('-Portable.${ext}')) { throw 'Setup/Portable names not separated' }
+
+          Write-Host 'FINAL source/security preflight PASS'
 
       - name: Stamp native Windows engine version
         shell: pwsh
         run: |
           @'
-          const char *PPSSPP_GIT_VERSION = "PSP-FloGB-Native-Unified-1.2.0-FIX7";
+          const char *PPSSPP_GIT_VERSION = "PSP-FloGB-Native-Unified-FINAL";
           #define PPSSPP_GIT_VERSION_NO_UPDATE 1
           '@ | Set-Content -Encoding ascii ppsspp/git-version.cpp
 
           @'
-          #define PPSSPP_WIN_VERSION_STRING "1.20.4-FloGB-1.2.0-FIX7"
-          #define PPSSPP_WIN_VERSION_COMMA 1,20,4,127
+          #define PPSSPP_WIN_VERSION_STRING "1.20.4-FloGB-FINAL"
+          #define PPSSPP_WIN_VERSION_COMMA 1,20,4,199
           #define PPSSPP_WIN_VERSION_NO_UPDATE 1
           '@ | Set-Content -Encoding ascii ppsspp/Windows/win-version.h
 
@@ -159,22 +162,20 @@ jobs:
           if (Test-Path engine) { Remove-Item -Recurse -Force engine }
           New-Item -ItemType Directory -Force engine | Out-Null
           $exe = Get-ChildItem -Path ppsspp -Filter PPSSPPWindows64.exe -File -Recurse | Select-Object -First 1
-          if (-not $exe) {
-            throw 'PPSSPPWindows64.exe was not produced'
-          }
+          if (-not $exe) { throw 'PPSSPPWindows64.exe was not produced' }
           Copy-Item $exe.FullName engine/PPSSPPWindows64.exe
           Copy-Item -Recurse ppsspp/assets engine/assets
           @"
-          PSP FloGB Native Engine bundled with Unified 1.2.0 FIX7
+          PSP FloGB Native Engine FINAL unified build
           Base commit: $env:PPSSPP_COMMIT
-          UDP native bridge: 127.0.0.1:8796
-          Debugger: ws://127.0.0.1:9000/debugger
-          FIX7: verified gauge patch + verified KO/Victory/Outro + real LIVE identity transport
-          P2 combat virtual input: NOT_WIRED until game-internal P2 path is traced
+          Ranking timezone: Asia/Ho_Chi_Minh
+          Weekly/monthly reset: FIX8
+          Multi-streamer Supabase runtime: FIX9
+          Online scopes: Local / Streamer / Global
+          Offline queue + RPC dedupe enabled
+          Supabase credentials are runtime-configurable; no rebuild required
           "@ | Set-Content -Encoding utf8 engine/ENGINE_BUILD_INFO.txt
-          if (-not (Test-Path engine/PPSSPPWindows64.exe)) {
-            throw 'Engine copy failed'
-          }
+          if (-not (Test-Path engine/PPSSPPWindows64.exe)) { throw 'Engine copy failed' }
 
       - name: Install Electron dependencies
         shell: pwsh
@@ -187,7 +188,7 @@ jobs:
           }
           npx electron --version
 
-      - name: Build one PSP FloGB Windows app
+      - name: Build FINAL PSP FloGB Windows app
         shell: pwsh
         run: npm run dist
 
@@ -199,17 +200,15 @@ jobs:
             $native = Get-ChildItem $unpacked.FullName -Filter PPSSPPWindows64.exe -Recurse |
               Where-Object { $_.FullName -match 'engine' } |
               Select-Object -First 1
-            if (-not $native) {
-              throw 'Packaged app is missing bundled Native Engine'
-            }
+            if (-not $native) { throw 'Packaged app is missing bundled Native Engine' }
             Write-Host "Bundled engine verified: $($native.FullName)"
           }
           Get-ChildItem dist -File | Format-Table Name,Length
 
-      - name: Upload PSP FloGB Native Unified V1.2.0 FIX7
+      - name: Upload PSP FloGB Native Unified FINAL
         uses: actions/upload-artifact@v7
         with:
-          name: PSP-FloGB-Native-Unified-V1.2.0-FIX7-Windows-x64
+          name: PSP-FloGB-Native-Unified-FINAL-Windows-x64
           path: |
             dist/*.exe
             dist/*unpacked*/**
