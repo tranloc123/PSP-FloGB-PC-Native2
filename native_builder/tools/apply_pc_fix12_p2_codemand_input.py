@@ -6,7 +6,7 @@ if len(sys.argv) != 2:
     raise SystemExit('Usage: apply_pc_fix12_p2_codemand_input.py <ppsspp_repo>')
 
 SCRIPT = Path(__file__).resolve()
-PROJECT = SCRIPT.parent.parent if SCRIPT.parent.name == 'tools' else SCRIPT.parents[2]
+PROJECT = SCRIPT.parents[2]
 REPO = Path(sys.argv[1]).resolve()
 main_js = PROJECT / 'main.js'
 renderer_js = PROJECT / 'renderer' / 'app.js'
