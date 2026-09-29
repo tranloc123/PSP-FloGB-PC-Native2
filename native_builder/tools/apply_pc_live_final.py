@@ -550,6 +550,218 @@ main_js.write_text(m, encoding="utf-8")
 print("LIVE FINAL Rule combat gate + native input: PASS")
 
 c = controller_js.read_text(encoding="utf-8")
+
+# ---------------------------------------------------------------------------
+# PRODUCTION RANDOM R2
+# Stop using Soulcalibur sourceSlot 30 (?) for "random".
+# Randomize one of the 28 actual fighters, then navigate directly to that slot.
+# Shuffle-bag guarantees every fighter appears once before any repeats.
+# ---------------------------------------------------------------------------
+
+if "const crypto = require('crypto');" not in c:
+    crypto_anchor = "const path = require('path');\n"
+    if crypto_anchor not in c:
+        raise SystemExit("LIVE FINAL R2 controller crypto import anchor missing")
+    c = c.replace(crypto_anchor, crypto_anchor + "const crypto = require('crypto');\n", 1)
+
+random_anchor = "const GIFT_TX_TTL_MS = 6 * 60 * 60 * 1000; // dedupe TikTools retries for 6 hours\n"
+random_engine = r"""
+const RANDOM_ROSTER = Object.freeze(
+  allCharacters()
+    .map(x => Object.freeze({sourceSlot:Number(x.sourceSlot), name:String(x.name||'UNKNOWN')}))
+    .filter(x => Number.isInteger(x.sourceSlot) && x.sourceSlot >= 1 && x.sourceSlot <= 29 && x.sourceSlot !== 18)
+);
+if (RANDOM_ROSTER.length !== 28) {
+  throw new Error(`RANDOM ROSTER INVALID: expected 28 fighters, got ${RANDOM_ROSTER.length}`);
+}
+
+const randomBags = {P1:[], P2:[]};
+const randomLast = {P1:null, P2:null};
+
+function resetRandomBags(){
+  randomBags.P1=[];
+  randomBags.P2=[];
+  randomLast.P1=null;
+  randomLast.P2=null;
+}
+
+function refillRandomBag(team){
+  const bag=RANDOM_ROSTER.map(x=>({...x}));
+  for(let i=bag.length-1;i>0;i--){
+    const j=crypto.randomInt(i+1);
+    [bag[i],bag[j]]=[bag[j],bag[i]];
+  }
+
+  // Do not allow the first fighter of a fresh bag to equal the last fighter
+  // of the previous bag. Random stays random, but consecutive duplicates vanish.
+  const prev=randomLast[team];
+  if(prev!=null && bag.length>1 && bag[0].sourceSlot===prev){
+    const j=bag.findIndex((x,i)=>i>0&&x.sourceSlot!==prev);
+    if(j>0)[bag[0],bag[j]]=[bag[j],bag[0]];
+  }
+
+  randomBags[team]=bag;
+}
+
+function nextRandomCharacter(team='P2'){
+  team=team==='P1'?'P1':'P2';
+  if(!randomBags[team].length)refillRandomBag(team);
+  const item=randomBags[team].shift();
+  randomLast[team]=item.sourceSlot;
+  return item;
+}
+"""
+if "const RANDOM_ROSTER = Object.freeze(" not in c:
+    if random_anchor not in c:
+        raise SystemExit("LIVE FINAL R2 random engine anchor missing")
+    c = c.replace(random_anchor, random_anchor + random_engine, 1)
+
+# Make Remote Debugger taps actually await the websocket send callback.
+tap_old = """  tap(button, duration = 2) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify({event:'input.buttons.press', ticket:this.ticket++, button, duration}));
+    return true;
+  }"""
+tap_new = """  tap(button, duration = 2) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN)
+      return Promise.reject(new Error('PPSSPP debugger not connected'));
+    const payload=JSON.stringify({event:'input.buttons.press',ticket:this.ticket++,button,duration});
+    return new Promise((resolve,reject)=>{
+      this.ws.send(payload,err=>err?reject(err):resolve(true));
+    });
+  }"""
+if tap_old in c:
+    c=c.replace(tap_old,tap_new,1)
+elif "return new Promise((resolve,reject)=>{" not in c:
+    raise SystemExit("LIVE FINAL R2 debugger tap marker missing")
+
+game_tap_old = "  tap(button) { debuggerClient.tap(button, 2); },"
+game_tap_new = "  tap(button) { return debuggerClient.tap(button, 2); },"
+if game_tap_old in c:
+    c=c.replace(game_tap_old,game_tap_new,1)
+elif game_tap_new not in c:
+    raise SystemExit("LIVE FINAL R2 game.tap marker missing")
+
+# Reset bag on a deliberate new session.
+reset_marker = "  pickController.clear();\n  native.sendCancel().catch(() => {});"
+if "  resetRandomBags();\n" not in c:
+    if reset_marker not in c:
+        raise SystemExit("LIVE FINAL R2 resetSession marker missing")
+    c=c.replace(reset_marker,"  pickController.clear();\n  resetRandomBags();\n  native.sendCancel().catch(() => {});",1)
+
+# Track the actual P2 random fighter in runtime state.
+game_state_marker = "  lastError: '',\n"
+if "  lastP2Random: null,\n" not in c:
+    if game_state_marker not in c:
+        raise SystemExit("LIVE FINAL R2 game state marker missing")
+    c=c.replace(game_state_marker,game_state_marker+"  lastP2Random: null,\n",1)
+
+# Replace P2 Random30 with direct 28-fighter shuffle-bag selection.
+auto_start = c.find("  async autoPickAndStartNextTraining(p1SourceSlot) {\n")
+auto_end = c.find("  async waitNextTrainingCombat(", auto_start)
+if auto_start < 0 or auto_end < 0:
+    raise SystemExit("LIVE FINAL R2 autoPick structural boundary missing")
+
+auto_pick = r"""  async autoPickAndStartNextTraining(p1SourceSlot, p1RandomName = null) {
+    this.phase = 'AUTO_PICK';
+
+    const p2Random=nextRandomCharacter('P2');
+    this.lastP2Random={...p2Random,at:now()};
+
+    await sleep(1200);
+    await this.moveCursor(p1SourceSlot, p1RandomName ? `P1 RANDOM ${p1RandomName}` : 'P1 PICK');
+
+    await this.tap('cross'); await sleep(1200);
+    await this.tap('right'); await sleep(900);
+    await this.tap('cross'); await sleep(2600);
+    await this.tap('cross'); await sleep(1800);
+
+    // P2 cursor starts at Dampierre H3C3. Do NOT use sourceSlot 30 (?) anymore.
+    // Pick a real fighter from the 28-character shuffle bag.
+    await this.moveCursor(p2Random.sourceSlot, `P2 RANDOM ${p2Random.name}`);
+    await this.tap('cross'); await sleep(1800);
+    await this.tap('right'); await sleep(1200);
+    await this.tap('cross'); await sleep(2800);
+
+    await this.tap('cross'); await sleep(1400);
+    await this.tap('cross'); await sleep(1400);
+    await this.tap('cross');
+
+    log(`P1 selected + P2 RANDOM BAG -> ${p2Random.name} source=${p2Random.sourceSlot} | map sequence sent`);
+    return p2Random;
+  },
+
+"""
+c = c[:auto_start] + auto_pick + c[auto_end:]
+
+# Replace P1 timeout sourceSlot 30 with the same robust direct-fighter random.
+continue_start = c.find("  async continueToNextRound() {\n")
+continue_route = c.find("    // Restore combat code before menu/character select", continue_start)
+if continue_start < 0 or continue_route < 0:
+    raise SystemExit("LIVE FINAL R2 continueToNextRound boundary missing")
+
+old_prefix = c[continue_start:continue_route]
+new_prefix = r"""  async continueToNextRound() {
+    const a = session.activePick;
+    if (!a || !a.locked) {
+      this.continueBusy = false;
+      return;
+    }
+
+    const p1Random=a.timedOut ? nextRandomCharacter('P1') : null;
+    const p1SourceSlot=p1Random ? p1Random.sourceSlot : Number(a.sourceSlot);
+
+    if (!Number.isInteger(p1SourceSlot) || p1SourceSlot < 1 || p1SourceSlot > 29 || p1SourceSlot === 18) {
+      throw new Error('Invalid P1 source slot: ' + p1SourceSlot);
+    }
+
+    if(p1Random){
+      a.sourceSlot=p1Random.sourceSlot;
+      a.character=p1Random.name;
+      log(`P1 TIMEOUT RANDOM BAG -> ${p1Random.name} source=${p1Random.sourceSlot}`,'warn');
+    }
+
+"""
+c = c[:continue_start] + new_prefix + c[continue_route:]
+
+# Pass P1 random label into selection.
+old_call = "    await this.autoPickAndStartNextTraining(p1SourceSlot);"
+new_call = "    await this.autoPickAndStartNextTraining(p1SourceSlot,p1Random?.name||null);"
+if old_call not in c:
+    raise SystemExit("LIVE FINAL R2 autoPick call marker missing")
+c=c.replace(old_call,new_call,1)
+
+# Expose actual last P2 random in public state for post-live audit.
+public_marker = "      error:game.lastError,\n"
+if "      lastP2Random:game.lastP2Random,\n" not in c:
+    if public_marker not in c:
+        raise SystemExit("LIVE FINAL R2 public state marker missing")
+    c=c.replace(public_marker,public_marker+"      lastP2Random:game.lastP2Random,\n",1)
+
+# Hard production checks.
+for marker in (
+    "const crypto = require('crypto');",
+    "RANDOM_ROSTER.length !== 28",
+    "function nextRandomCharacter(team='P2')",
+    "const p2Random=nextRandomCharacter('P2');",
+    "P2 RANDOM BAG",
+    "const p1Random=a.timedOut ? nextRandomCharacter('P1') : null;",
+    "tap(button) { return debuggerClient.tap(button, 2); },",
+):
+    if marker not in c:
+        raise SystemExit(f"LIVE FINAL R2 random preflight missing: {marker}")
+
+for forbidden in (
+    "await this.moveCursor(30, 'P2 RANDOM')",
+    "a.timedOut ? 30 : Number(a.sourceSlot)",
+    "P1 selected + P2 Random30",
+):
+    if forbidden in c:
+        raise SystemExit(f"LIVE FINAL R2 old Random30 path survived: {forbidden}")
+
+controller_js.write_text(c, encoding="utf-8")
+print("LIVE FINAL R2 production random bag: PASS")
+
 old_p2 = "inputP2:'NOT_WIRED_GAME_INTERNAL_PATH',"
 new_p2 = "inputP2:'LOGICAL_SLOT1_NATIVE_HOOK',\n      // LEGACY_WORKFLOW_COMPAT_ONLY inputP2:'NOT_WIRED_GAME_INTERNAL_PATH'"
 if old_p2 in c:
@@ -713,6 +925,9 @@ required = {
         "inputP2:'LOGICAL_SLOT1_NATIVE_HOOK'",
         "LEGACY_WORKFLOW_COMPAT_ONLY inputP2:'NOT_WIRED_GAME_INTERNAL_PATH'",
         "native.sendInputCancel().catch",
+        "function nextRandomCharacter(team='P2')",
+        "P2 RANDOM BAG",
+        "lastP2Random:game.lastP2Random",
     ]),
     "renderer": (r + h, [
         'id="p2NativeStatus"',
@@ -734,6 +949,14 @@ for label, (src, markers) in required.items():
 for forbidden in ("await p2CodeMaskTap(", "ppsspp-p2-tap"):
     if forbidden in m:
         raise SystemExit(f"LIVE FINAL deprecated FIX12 path survived in main: {forbidden}")
+
+for forbidden in (
+    "await this.moveCursor(30, 'P2 RANDOM')",
+    "a.timedOut ? 30 : Number(a.sourceSlot)",
+    "P1 selected + P2 Random30",
+):
+    if forbidden in c:
+        raise SystemExit(f"LIVE FINAL R2 old Random30 path survived: {forbidden}")
 
 if "function installGameTestConsole(){ return; }" not in r and "flogbTestConsole" in r:
     raise SystemExit("LIVE FINAL app test console still active")
@@ -765,6 +988,7 @@ if build_info.exists():
             "Reset session cancels P1/P2 input queues\n"
             "Passive P2 READY health shown in FloGB\n"
             "In-game UI production-only: Match Top + BXH\n"
+            "Random R2: 28-fighter crypto shuffle bag; game Random30 tile disabled\n"
         )
 
 print("LIVE FINAL SOURCE PREFLIGHT PASS")
@@ -772,5 +996,6 @@ print("P1: NATIVE INPUT QUEUE")
 print("P2: LOGICAL SLOT 1 + MAILBOX")
 print("P2 runtime health: READY / HOOKED / WAIT / INCOMPAT")
 print("Game actions outside ARMED combat: DROPPED")
+print("Random R2: 28-FIGHTER SHUFFLE BAG / NO SLOT30")
 print("Visible in game: MATCH TOP + BXH")
-print("=== LIVE FINAL PASS ===")
+print("=== LIVE FINAL R2 PASS ===")
