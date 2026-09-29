@@ -152,8 +152,8 @@ inline bool EnsureInstalledCPU(State &s) {
         return false;
     }
 
-    s.hookWord = Memory::Read_Opcode_JIT(kHookAddr, true).encoding;
-    s.modeWord = Memory::Read_Opcode_JIT(kP2ModeStoreAddr, true).encoding;
+    s.hookWord = Memory::Read_Opcode_JIT(kHookAddr).encoding;
+    s.modeWord = Memory::Read_Opcode_JIT(kP2ModeStoreAddr).encoding;
 
     const bool hookCompatible = s.hookWord == kHookOriginal || s.hookWord == kHookPatched;
     const bool modeCompatible = s.modeWord == kP2ModeOriginal || s.modeWord == kP2ModePatched;
@@ -616,31 +616,19 @@ if "const RANDOM_ROSTER = Object.freeze(" not in c:
         raise SystemExit("LIVE FINAL R2 random engine anchor missing")
     c = c.replace(random_anchor, random_anchor + random_engine, 1)
 
-# Make Remote Debugger taps actually await the websocket send callback.
-tap_old = """  tap(button, duration = 2) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
-    this.ws.send(JSON.stringify({event:'input.buttons.press', ticket:this.ticket++, button, duration}));
-    return true;
-  }"""
-tap_new = """  tap(button, duration = 2) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN)
-      return Promise.reject(new Error('PPSSPP debugger not connected'));
-    const payload=JSON.stringify({event:'input.buttons.press',ticket:this.ticket++,button,duration});
-    return new Promise((resolve,reject)=>{
-      this.ws.send(payload,err=>err?reject(err):resolve(true));
-    });
-  }"""
-if tap_old in c:
-    c=c.replace(tap_old,tap_new,1)
-elif "return new Promise((resolve,reject)=>{" not in c:
-    raise SystemExit("LIVE FINAL R2 debugger tap marker missing")
-
-game_tap_old = "  tap(button) { debuggerClient.tap(button, 2); },"
-game_tap_new = "  tap(button) { return debuggerClient.tap(button, 2); },"
-if game_tap_old in c:
-    c=c.replace(game_tap_old,game_tap_new,1)
-elif game_tap_new not in c:
-    raise SystemExit("LIVE FINAL R2 game.tap marker missing")
+# FIX7 already owns the persistent debugger tap implementation.
+# Do not rewrite it here. Verify the post-FIX7 async DOWN/HOLD/UP path instead.
+tap_required = (
+    "  async tap(button, holdMs = 80) {",
+    "event:'input.buttons.send'",
+    "buttons:{[button]:true}",
+    "buttons:{[button]:false}",
+    "  async tap(button) { return debuggerClient.tap(button, 80); },",
+)
+missing_tap = [x for x in tap_required if x not in c]
+if missing_tap:
+    raise SystemExit(f"LIVE FINAL R2.1 post-FIX7 tap preflight missing: {missing_tap}")
+print("LIVE FINAL R2.1 post-FIX7 tap path: PASS")
 
 # Reset bag on a deliberate new session.
 reset_marker = "  pickController.clear();\n  native.sendCancel().catch(() => {});"
@@ -746,7 +734,7 @@ for marker in (
     "const p2Random=nextRandomCharacter('P2');",
     "P2 RANDOM BAG",
     "const p1Random=a.timedOut ? nextRandomCharacter('P1') : null;",
-    "tap(button) { return debuggerClient.tap(button, 2); },",
+    "async tap(button) { return debuggerClient.tap(button, 80); },",
 ):
     if marker not in c:
         raise SystemExit(f"LIVE FINAL R2 random preflight missing: {marker}")
@@ -900,6 +888,8 @@ required = {
         "0x3A690001",
         "fighterReady",
         "Core_RunOnCPUThread",
+        "Memory::Read_Opcode_JIT(kHookAddr).encoding",
+        "Memory::Read_Opcode_JIT(kP2ModeStoreAddr).encoding",
     ]),
     "bridge": (b, [
         'if (cmd == "INPUT")',
@@ -945,6 +935,9 @@ for label, (src, markers) in required.items():
     missing = [x for x in markers if x not in src]
     if missing:
         raise SystemExit(f"LIVE FINAL preflight missing in {label}: {missing}")
+
+if "Read_Opcode_JIT(kHookAddr, true)" in p2 or "Read_Opcode_JIT(kP2ModeStoreAddr, true)" in p2:
+    raise SystemExit("LIVE FINAL R2.1 obsolete Read_Opcode_JIT two-arg API survived")
 
 for forbidden in ("await p2CodeMaskTap(", "ppsspp-p2-tap"):
     if forbidden in m:
@@ -998,4 +991,4 @@ print("P2 runtime health: READY / HOOKED / WAIT / INCOMPAT")
 print("Game actions outside ARMED combat: DROPPED")
 print("Random R2: 28-FIGHTER SHUFFLE BAG / NO SLOT30")
 print("Visible in game: MATCH TOP + BXH")
-print("=== LIVE FINAL R2 PASS ===")
+print("=== LIVE FINAL R2.1 API-COMPAT PASS ===")
